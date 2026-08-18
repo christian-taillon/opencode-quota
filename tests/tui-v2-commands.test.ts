@@ -10,8 +10,8 @@ describe("V2 quota TUI commands", () => {
       data: { on: vi.fn(() => vi.fn()) },
       keymap: { layer: vi.fn((build) => (layer = build())) },
       ui: {
-        slot: vi.fn((name, render) => {
-          if (name === "app") render({});
+        slot: vi.fn((claim) => {
+          if (claim.append === "app") claim.render();
           return vi.fn();
         }),
         toast: { show: vi.fn() },
@@ -36,5 +36,7 @@ describe("V2 quota TUI commands", () => {
       "tokens_between",
     ]);
     expect(layer?.commands.every((command) => command.palette)).toBe(true);
+    expect(context.ui.slot).toHaveBeenCalledWith(expect.objectContaining({ append: "app" }));
+    expect(context.ui.slot).toHaveBeenCalledWith(expect.objectContaining({ append: "sidebar.content" }));
   });
 });

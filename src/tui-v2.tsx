@@ -45,10 +45,10 @@ type TuiContext = {
     }) => void;
   };
   ui: {
-    slot: {
-      (name: "app", render: () => null): () => void;
-      (name: "sidebar.content", render: (props: { sessionID: string }) => JSX.Element): () => void;
-    };
+    slot: (claim:
+      | { append: "app"; render: () => null }
+      | { append: "sidebar.content"; render: (props: { sessionID: string }) => JSX.Element }
+    ) => () => void;
     toast: { show: (toast: Toast) => void };
     dialog: {
       alert: (params: { title: string; message: string }) => Promise<unknown>;
@@ -273,48 +273,54 @@ const plugin = {
   setup(context: TuiContext) {
     let disposeEvents: (() => void) | undefined;
     let activeSessionID: string | undefined;
-    const disposeApp = context.ui.slot("app", () => {
-      if (disposeEvents) return null;
-      registerQuotaCommands(context, () => activeSessionID);
-      const trigger = (event: TuiEvent, reason: "idle" | "compacted" | "question") => {
-        const sessionID = getSessionID(event);
-        if (!sessionID) return;
-        activeSessionID = sessionID;
-        void getQuotaMessage(context, sessionID, reason)
-          .then((quota) => {
-            if (!quota) return;
-            context.ui.toast.show({
-              variant: "info",
-              title: "OpenCode Quota",
-              message: quota.message,
-              duration: quota.duration,
-            });
-          })
-          .catch(reportFailure);
-      };
-      const onStepEnded = context.data.on("session.step.ended", (event) => trigger(event, "idle"));
-      const onCompacted = context.data.on("session.compacted", (event) =>
-        trigger(event, "compacted"),
-      );
-      const onQuestion = context.data.on("session.tool.success", (event) => {
-        if (event.data?.tool === "question") trigger(event, "question");
-      });
-      disposeEvents = () => {
-        onStepEnded();
-        onCompacted();
-        onQuestion();
-      };
-      return null;
-    });
-    const disposeSidebar = context.ui.slot("sidebar.content", (props) => (
-      <SidebarQuotaView
-        context={context}
-        sessionID={props.sessionID}
-        setActiveSessionID={(sessionID) => {
+    const disposeApp = context.ui.slot({
+      append: "app",
+      render: () => {
+        if (disposeEvents) return null;
+        registerQuotaCommands(context, () => activeSessionID);
+        const trigger = (event: TuiEvent, reason: "idle" | "compacted" | "question") => {
+          const sessionID = getSessionID(event);
+          if (!sessionID) return;
           activeSessionID = sessionID;
-        }}
-      />
-    ));
+          void getQuotaMessage(context, sessionID, reason)
+            .then((quota) => {
+              if (!quota) return;
+              context.ui.toast.show({
+                variant: "info",
+                title: "OpenCode Quota",
+                message: quota.message,
+                duration: quota.duration,
+              });
+            })
+            .catch(reportFailure);
+        };
+        const onStepEnded = context.data.on("session.step.ended", (event) => trigger(event, "idle"));
+        const onCompacted = context.data.on("session.compacted", (event) =>
+          trigger(event, "compacted"),
+        );
+        const onQuestion = context.data.on("session.tool.success", (event) => {
+          if (event.data?.tool === "question") trigger(event, "question");
+        });
+        disposeEvents = () => {
+          onStepEnded();
+          onCompacted();
+          onQuestion();
+        };
+        return null;
+      },
+    });
+    const disposeSidebar = context.ui.slot({
+      append: "sidebar.content",
+      render: (props) => (
+        <SidebarQuotaView
+          context={context}
+          sessionID={props.sessionID}
+          setActiveSessionID={(sessionID) => {
+            activeSessionID = sessionID;
+          }}
+        />
+      ),
+    });
     return () => {
       disposeEvents?.();
       disposeApp();
