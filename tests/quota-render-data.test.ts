@@ -665,6 +665,342 @@ describe("collectQuotaRenderData shared quota state", () => {
     expect(syntheticProvider.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("reprojects one immutable cached semantic snapshot across detail changes and refreshes normally at TTL zero", async () => {
+    const provider = testProvider("synthetic", {
+      entries: [
+        {
+          accounting: { ...TEST_ACCOUNTING, sourceId: "account-a" },
+          name: "Monthly quota",
+          group: "Semantic",
+          percentRemaining: 75,
+          semantic: {
+            metric: { kind: "window", window: "month" },
+            prominence: "primary",
+          },
+          basis: {
+            remaining: {
+              quantity: { decimal: "75", unit: { kind: "count", unit: "credit" } },
+              authority: "provider_reported",
+            },
+          },
+        },
+        {
+          accounting: {
+            ...TEST_ACCOUNTING,
+            resultType: "balance",
+            sourceId: "account-a",
+          },
+          kind: "quantity",
+          name: "Balance",
+          group: "Semantic",
+          quantity: { decimal: "12.5", unit: { kind: "currency", code: "USD" } },
+          semantic: {
+            metric: { kind: "component", component: "total_balance" },
+            prominence: "supplementary",
+          },
+        },
+        {
+          accounting: TEST_ACCOUNTING,
+          kind: "value",
+          name: "Legacy status",
+          value: "Ready",
+        },
+      ],
+    });
+
+    const baseConfig = {
+      enabledProviders: ["synthetic"],
+      minIntervalMs: 60_000,
+    } as const;
+    const summary = await collectQuotaRenderData({
+      client: TEST_CLIENT,
+      config: renderConfig({ ...baseConfig, accountingDetail: "summary" }),
+      surfaceExplicitProviderIssues: true,
+      formatStyle: "allWindows",
+      providers: [provider],
+    });
+    expect(summary.data?.entries.map((entry) => entry.name)).toEqual([
+      "Monthly quota",
+      "Legacy status",
+    ]);
+
+    const projectedPercent = summary.data?.entries[0];
+    if (
+      !projectedPercent ||
+      !("percentRemaining" in projectedPercent) ||
+      !projectedPercent.semantic ||
+      !projectedPercent.basis?.remaining
+    ) {
+      throw new Error("expected projected semantic percentage with remaining basis");
+    }
+    projectedPercent.semantic.metric = { kind: "aggregate" };
+    projectedPercent.basis.remaining.quantity.decimal = "1";
+
+    const detailed = await collectQuotaRenderData({
+      client: TEST_CLIENT,
+      config: renderConfig({ ...baseConfig, accountingDetail: "detailed" }),
+      surfaceExplicitProviderIssues: true,
+      formatStyle: "allWindows",
+      providers: [provider],
+    });
+    expect(detailed.data?.entries.map((entry) => entry.name)).toEqual([
+      "Monthly quota",
+      "Balance",
+      "Legacy status",
+    ]);
+    const detailedPercent = detailed.data?.entries[0];
+    if (!detailedPercent || !("percentRemaining" in detailedPercent)) {
+      throw new Error("expected detailed semantic percentage");
+    }
+    expect(detailedPercent.semantic?.metric).toEqual({ kind: "window", window: "month" });
+    expect(detailedPercent.basis?.remaining?.quantity.decimal).toBe("75");
+    expect(provider.fetch).toHaveBeenCalledTimes(1);
+
+    await collectQuotaRenderData({
+      client: TEST_CLIENT,
+      config: renderConfig({
+        ...baseConfig,
+        accountingDetail: "detailed",
+        minIntervalMs: 0,
+      }),
+      surfaceExplicitProviderIssues: true,
+      formatStyle: "allWindows",
+      providers: [provider],
+    });
+    expect(provider.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("partitions semantic single-window percentages by source and result while retaining non-window facts", async () => {
+    const provider = testProvider("synthetic", {
+      entries: [
+        {
+          accounting: { ...TEST_ACCOUNTING, sourceId: "account-a" },
+          name: "A weekly quota",
+          group: "Semantic",
+          percentRemaining: 30,
+          semantic: { metric: { kind: "window", window: "week" }, prominence: "primary" },
+        },
+        {
+          accounting: { ...TEST_ACCOUNTING, sourceId: "account-a" },
+          name: "A daily quota",
+          group: "Semantic",
+          percentRemaining: 30,
+          semantic: { metric: { kind: "window", window: "day" }, prominence: "primary" },
+        },
+        {
+          accounting: { ...TEST_ACCOUNTING, resultType: "budget", sourceId: "account-a" },
+          name: "A monthly budget",
+          group: "Semantic",
+          percentRemaining: 40,
+          semantic: { metric: { kind: "window", window: "month" }, prominence: "primary" },
+        },
+        {
+          accounting: { ...TEST_ACCOUNTING, resultType: "budget", sourceId: "account-a" },
+          name: "A yearly budget",
+          group: "Semantic",
+          percentRemaining: 20,
+          semantic: { metric: { kind: "window", window: "year" }, prominence: "primary" },
+        },
+        {
+          accounting: { ...TEST_ACCOUNTING, sourceId: "account-b" },
+          name: "B daily quota",
+          group: "Semantic",
+          percentRemaining: 15,
+          semantic: { metric: { kind: "window", window: "day" }, prominence: "primary" },
+        },
+        {
+          accounting: { ...TEST_ACCOUNTING, resultType: "spend", sourceId: "account-a" },
+          name: "Known spend",
+          group: "Semantic",
+          percentRemaining: 90,
+          semantic: { metric: { kind: "named", name: "Known API" }, prominence: "primary" },
+        },
+        {
+          accounting: { ...TEST_ACCOUNTING, resultType: "balance", sourceId: "account-a" },
+          kind: "quantity",
+          name: "USD balance",
+          group: "Semantic",
+          quantity: { decimal: "10", unit: { kind: "currency", code: "USD" } },
+          semantic: {
+            metric: { kind: "component", component: "total_balance" },
+            prominence: "primary",
+          },
+        },
+        {
+          accounting: { ...TEST_ACCOUNTING, resultType: "balance", sourceId: "account-a" },
+          kind: "quantity",
+          name: "CNY balance",
+          group: "Semantic",
+          quantity: { decimal: "20", unit: { kind: "currency", code: "CNY" } },
+          semantic: {
+            metric: { kind: "component", component: "total_balance" },
+            prominence: "primary",
+          },
+        },
+      ],
+    });
+
+    const result = await collectQuotaRenderData({
+      client: TEST_CLIENT,
+      config: renderConfig({
+        enabledProviders: ["synthetic"],
+        accountingDetail: "detailed",
+      }),
+      surfaceExplicitProviderIssues: true,
+      formatStyle: "singleWindow",
+      providers: [provider],
+    });
+
+    const entries = result.data?.entries ?? [];
+    expect(entries).toHaveLength(6);
+    expect(
+      entries.map((entry) => ({
+        resultType: entry.accounting.resultType,
+        sourceId: entry.accounting.sourceId,
+        metric: entry.semantic?.metric,
+        unit: entry.kind === "quantity" ? entry.quantity.unit : undefined,
+      })),
+    ).toEqual([
+      {
+        resultType: "quota",
+        sourceId: "account-a",
+        metric: { kind: "window", window: "day" },
+        unit: undefined,
+      },
+      {
+        resultType: "quota",
+        sourceId: "account-b",
+        metric: { kind: "window", window: "day" },
+        unit: undefined,
+      },
+      {
+        resultType: "budget",
+        sourceId: "account-a",
+        metric: { kind: "window", window: "year" },
+        unit: undefined,
+      },
+      {
+        resultType: "spend",
+        sourceId: "account-a",
+        metric: { kind: "named", name: "Known API" },
+        unit: undefined,
+      },
+      {
+        resultType: "balance",
+        sourceId: "account-a",
+        metric: { kind: "component", component: "total_balance" },
+        unit: { kind: "currency", code: "USD" },
+      },
+      {
+        resultType: "balance",
+        sourceId: "account-a",
+        metric: { kind: "component", component: "total_balance" },
+        unit: { kind: "currency", code: "CNY" },
+      },
+    ]);
+  });
+
+  it("sorts semantic rows only inside contiguous runs and keeps legacy anchors fixed", async () => {
+    const provider = testProvider("synthetic", {
+      entries: [
+        {
+          accounting: { ...TEST_ACCOUNTING, resultType: "balance" },
+          kind: "quantity",
+          name: "Balance",
+          quantity: { decimal: "1", unit: { kind: "currency", code: "USD" } },
+          semantic: {
+            metric: { kind: "component", component: "total_balance" },
+            prominence: "primary",
+          },
+        },
+        {
+          accounting: TEST_ACCOUNTING,
+          name: "Quota",
+          percentRemaining: 50,
+          semantic: { metric: { kind: "aggregate" }, prominence: "primary" },
+        },
+        {
+          accounting: { ...TEST_ACCOUNTING, sourceId: "legacy-one" },
+          kind: "value",
+          name: "Legacy anchor one",
+          value: "one",
+        },
+        {
+          accounting: { ...TEST_ACCOUNTING, resultType: "spend" },
+          kind: "quantity",
+          name: "Spend",
+          quantity: { decimal: "2", unit: { kind: "currency", code: "USD" } },
+          semantic: { metric: { kind: "named", name: "API" }, prominence: "primary" },
+        },
+        {
+          accounting: { ...TEST_ACCOUNTING, resultType: "usage" },
+          kind: "quantity",
+          name: "Usage",
+          quantity: { decimal: "3", unit: { kind: "count", unit: "token" } },
+          semantic: { metric: { kind: "aggregate" }, prominence: "primary" },
+        },
+        {
+          accounting: { ...TEST_ACCOUNTING, sourceId: "legacy-two" },
+          kind: "value",
+          name: "Legacy anchor two",
+          value: "two",
+        },
+        {
+          accounting: { ...TEST_ACCOUNTING, resultType: "balance" },
+          kind: "quantity",
+          name: "First tied balance",
+          quantity: { decimal: "4", unit: { kind: "currency", code: "USD" } },
+          semantic: { metric: { kind: "named", name: "First" }, prominence: "primary" },
+        },
+        {
+          accounting: { ...TEST_ACCOUNTING, resultType: "balance" },
+          kind: "quantity",
+          name: "Second tied balance",
+          quantity: { decimal: "5", unit: { kind: "currency", code: "USD" } },
+          semantic: { metric: { kind: "named", name: "Second" }, prominence: "primary" },
+        },
+      ],
+    });
+
+    const result = await collectQuotaRenderData({
+      client: TEST_CLIENT,
+      config: renderConfig({ enabledProviders: ["synthetic"], accountingDetail: "detailed" }),
+      surfaceExplicitProviderIssues: true,
+      formatStyle: "allWindows",
+      providers: [provider],
+    });
+
+    expect(result.data?.entries.map((entry) => entry.name)).toEqual([
+      "Quota",
+      "Balance",
+      "Legacy anchor one",
+      "Usage",
+      "Spend",
+      "Legacy anchor two",
+      "First tied balance",
+      "Second tied balance",
+    ]);
+
+    const singleWindow = await collectQuotaRenderData({
+      client: TEST_CLIENT,
+      config: renderConfig({ enabledProviders: ["synthetic"], accountingDetail: "detailed" }),
+      surfaceExplicitProviderIssues: true,
+      formatStyle: "singleWindow",
+      providers: [provider],
+    });
+    expect(singleWindow.data?.entries.map((entry) => entry.name)).toEqual([
+      "[Quota]",
+      "[Balance]",
+      "[Legacy anchor one]",
+      "[Usage]",
+      "[Spend]",
+      "[Legacy anchor two]",
+      "[First tied balance]",
+      "[Second tied balance]",
+    ]);
+    expect(provider.fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("suppresses a redundant Antigravity family only in render projections", async () => {
     const aliceAccounting = { ...TEST_ACCOUNTING, sourceId: "alice@example.com" };
     const bobAccounting = { ...TEST_ACCOUNTING, sourceId: "bob@example.com" };

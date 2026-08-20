@@ -73,6 +73,7 @@ describe("loadConfig integration runtime-path resolution", () => {
       writeQuotaToastConfig(dir, {
         enabled: false,
         enabledProviders: ["openai"],
+        accountingDetail: "summary",
         showOnIdle: false,
         pricingSnapshot: { source: "bundled", autoRefresh: 30 },
       });
@@ -81,6 +82,7 @@ describe("loadConfig integration runtime-path resolution", () => {
     writeQuotaToastConfig(workspaceDir, {
       enabled: true,
       enabledProviders: ["nano-gpt"],
+      accountingDetail: "detailed",
       formatStyle: "allWindows",
       onlyCurrentModel: true,
     });
@@ -96,6 +98,7 @@ describe("loadConfig integration runtime-path resolution", () => {
     expect(cfg.enabledProviders).toEqual(["nanogpt"]);
     expect(cfg.showOnIdle).toBe(false);
     expect(cfg.pricingSnapshot).toEqual({ source: "bundled", autoRefresh: 30 });
+    expect(cfg.accountingDetail).toBe("detailed");
     expect(cfg.formatStyle).toBe("allWindows");
     expect(cfg.onlyCurrentModel).toBe(true);
 
@@ -113,6 +116,7 @@ describe("loadConfig integration runtime-path resolution", () => {
     ).toBe(true);
     expect(meta.settingSources.enabled).toBe(quotaConfigSource(workspaceDir));
     expect(meta.settingSources.enabledProviders).toBe(quotaConfigSource(workspaceDir));
+    expect(meta.settingSources.accountingDetail).toBe(quotaConfigSource(workspaceDir));
     expect(
       configDirs.some(
         (dir) => meta.settingSources["pricingSnapshot.source"] === quotaConfigSource(dir),
@@ -123,6 +127,39 @@ describe("loadConfig integration runtime-path resolution", () => {
         (dir) => meta.settingSources["pricingSnapshot.autoRefresh"] === quotaConfigSource(dir),
       ),
     ).toBe(true);
+  });
+
+  it("diagnoses the removed Zen display key in file and legacy sources without translation", async () => {
+    writeQuotaSidecarConfig(workspaceDir, {
+      opencodeZenDisplay: "detailed",
+    });
+
+    const sidecarMeta = createLoadConfigMeta();
+    const sidecarConfig = await loadConfig(undefined, sidecarMeta, {
+      configRootDir: workspaceDir,
+    });
+    expect(sidecarConfig.accountingDetail).toBe("summary");
+    expect(sidecarMeta.settingSources.accountingDetail).toBeUndefined();
+    expect(sidecarMeta.configIssues).toContainEqual({
+      path: quotaSidecarConfigSource(workspaceDir),
+      key: "opencodeZenDisplay",
+      message: 'removed; use root "accountingDetail" ("summary" or "detailed")',
+    });
+
+    writeQuotaToastConfig(nestedDir, {
+      accountingDetail: "detailed",
+      opencodeZenDisplay: "default",
+    });
+
+    const legacyMeta = createLoadConfigMeta();
+    const legacyConfig = await loadConfig(undefined, legacyMeta, { configRootDir: nestedDir });
+    expect(legacyConfig.accountingDetail).toBe("detailed");
+    expect(legacyMeta.settingSources.accountingDetail).toBe(quotaConfigSource(nestedDir));
+    expect(legacyMeta.configIssues).toContainEqual({
+      path: quotaConfigSource(nestedDir),
+      key: "opencodeZenDisplay",
+      message: 'removed; use root "accountingDetail" ("summary" or "detailed")',
+    });
   });
 
   it("loads the recommended quota-toast.jsonc sidecar with comments", async () => {

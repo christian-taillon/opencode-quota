@@ -111,15 +111,6 @@ export const opencodeZenProvider: QuotaProvider = {
         ? null
         : result.data.monthlyUsage / OPENCODE_ZEN_BILLING_UNITS_PER_DOLLAR;
 
-    const detailed = ctx.config?.opencodeZenDisplay === "detailed";
-    const autoReloadText =
-      detailed &&
-      result.data.reload &&
-      result.data.reloadAmount !== null &&
-      result.data.reloadTrigger !== null
-        ? `Auto $${result.data.reloadAmount}/${result.data.reloadTrigger}`
-        : "";
-
     const entry: QuotaToastEntry =
       effectiveMonthlyLimit !== null &&
       Number.isFinite(effectiveMonthlyLimit) &&
@@ -131,14 +122,6 @@ export const opencodeZenProvider: QuotaProvider = {
             accounting: OPENCODE_ZEN_BUDGET_ACCOUNTING,
             name: "",
             group: OPENCODE_ZEN_GROUP,
-            ...(detailed
-              ? {
-                  right: autoReloadText
-                    ? `Limit $${effectiveMonthlyLimit.toFixed(2)}  ${autoReloadText}`
-                    : `Limit $${effectiveMonthlyLimit.toFixed(2)}`,
-                  barValue: `$${balanceUsd.toFixed(2)}`,
-                }
-              : {}),
             percentRemaining: Math.min(
               100,
               Math.max(
@@ -155,24 +138,19 @@ export const opencodeZenProvider: QuotaProvider = {
             value: `$${balanceUsd.toFixed(2)}`,
           };
 
-    return withStatusDetails(
-      attemptedResult([entry], [], detailed ? { singleWindowShowRight: true } : undefined),
-      [
-        ...statusDetails,
-        { key: "balance_usd", value: `$${balanceUsd.toFixed(2)}` },
-        {
-          key: "monthly_limit_usd",
-          value:
-            result.data.monthlyLimit === null
-              ? "(none)"
-              : `$${result.data.monthlyLimit.toFixed(2)}`,
-        },
-        {
-          key: "last_payment_usd",
-          value:
-            result.data.lastPayment === null ? "(none)" : `$${result.data.lastPayment.toFixed(2)}`,
-        },
-      ],
-    );
+    return withStatusDetails(attemptedResult([entry]), [
+      ...statusDetails,
+      { key: "balance_usd", value: `$${balanceUsd.toFixed(2)}` },
+      {
+        key: "monthly_limit_usd",
+        value:
+          result.data.monthlyLimit === null ? "(none)" : `$${result.data.monthlyLimit.toFixed(2)}`,
+      },
+      {
+        key: "last_payment_usd",
+        value:
+          result.data.lastPayment === null ? "(none)" : `$${result.data.lastPayment.toFixed(2)}`,
+      },
+    ]);
   },
 };

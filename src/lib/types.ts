@@ -22,6 +22,7 @@ export type GoogleAgyAuthSourceKey = "google-agy" | "opencode-agy-auth" | "googl
 export type CursorQuotaPlan = "none" | "pro" | "pro-plus" | "ultra";
 export type PricingSnapshotSource = "auto" | "bundled" | "runtime";
 export type PercentDisplayMode = "remaining" | "used";
+export type AccountingDetail = "summary" | "detailed";
 export type SessionTokenScope = "current" | "tree";
 export type OpenCodeGoWindowKey = "rolling" | "weekly" | "monthly";
 export type QuotaResetWindow = "fiveHour" | "hourly" | "daily" | "weekly" | "monthly" | "yearly";
@@ -109,6 +110,8 @@ export interface QuotaToastConfig {
   formatStyle: QuotaFormatStyle;
   /** Shared percent meaning for popup toasts and the TUI sidebar. */
   percentDisplayMode: PercentDisplayMode;
+  /** Whether human surfaces include supplementary semantic accounting rows. */
+  accountingDetail: AccountingDetail;
   /**
    * Decimal places for compact reset countdown labels.
    * Unset preserves the default integer-day and half-hour-step display.
@@ -157,8 +160,6 @@ export interface QuotaToastConfig {
   opencodeGoWindows: OpenCodeGoWindowKey[];
   /** Optional OpenCode Zen monthly budget override in USD. */
   opencodeMonthlyLimit?: number;
-  /** Optional OpenCode Zen display style: "default" (bar + percent) or "detailed" (limit/auto-reload + balance). */
-  opencodeZenDisplay?: "default" | "detailed";
   cursorIncludedApiUsd?: number;
   cursorBillingCycleStartDay?: number;
   pricingSnapshot: PricingSnapshotConfig;
@@ -224,6 +225,7 @@ export const DEFAULT_CONFIG: QuotaToastConfig = {
   tuiCommandDisplay: "inline",
   formatStyle: DEFAULT_QUOTA_FORMAT_STYLE,
   percentDisplayMode: "remaining",
+  accountingDetail: "summary",
   minIntervalMs: 300000, // 5 minutes
   requestTimeoutMs: REQUEST_TIMEOUT_MS,
 
@@ -240,7 +242,6 @@ export const DEFAULT_CONFIG: QuotaToastConfig = {
   cursorPlan: "none",
   opencodeGoWindows: ["rolling", "weekly", "monthly"],
   opencodeMonthlyLimit: undefined,
-  opencodeZenDisplay: undefined,
   pricingSnapshot: {
     source: "auto",
     autoRefresh: 7,

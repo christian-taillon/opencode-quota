@@ -92,30 +92,55 @@ describe("loadConfig", () => {
     expect(removedKey.meta.configIssues).toEqual([]);
   });
 
-  it("loads the OpenCode Zen display mode with provenance and diagnostics", async () => {
+  it("loads accounting detail with provenance and diagnoses the removed Zen key without translating it", async () => {
     const defaults = await loadSdkConfig({});
-    expect(defaults.config.opencodeZenDisplay).toBeUndefined();
+    expect(defaults.config.accountingDetail).toBe("summary");
+    expect(defaults.meta.settingSources).toEqual({});
 
-    for (const opencodeZenDisplay of ["default", "detailed"] as const) {
-      const configured = await loadSdkConfig({ opencodeZenDisplay });
-      expect(configured.config.opencodeZenDisplay).toBe(opencodeZenDisplay);
+    for (const accountingDetail of ["summary", "detailed"] as const) {
+      const configured = await loadSdkConfig({ accountingDetail });
+      expect(configured.config.accountingDetail).toBe(accountingDetail);
       expect(configured.meta.settingSources).toEqual({
-        opencodeZenDisplay: "client.config.get",
+        accountingDetail: "client.config.get",
       });
       expect(configured.meta.networkSettingSources).toEqual({});
       expect(configured.meta.configIssues).toEqual([]);
     }
 
-    const invalid = await loadSdkConfig({ opencodeZenDisplay: "expanded" });
-    expect(invalid.config.opencodeZenDisplay).toBeUndefined();
+    const invalid = await loadSdkConfig({ accountingDetail: "default" });
+    expect(invalid.config.accountingDetail).toBe("summary");
     expect(invalid.meta.settingSources).toEqual({});
     expect(invalid.meta.configIssues).toEqual([
       {
         path: "client.config.get",
-        key: "opencodeZenDisplay",
-        message: 'expected "default" or "detailed"',
+        key: "accountingDetail",
+        message: 'expected "summary" or "detailed"',
       },
     ]);
+
+    for (const opencodeZenDisplay of ["default", "detailed", "expanded"]) {
+      const removed = await loadSdkConfig({ opencodeZenDisplay });
+      expect(removed.config.accountingDetail).toBe("summary");
+      expect(removed.meta.settingSources).toEqual({});
+      expect(removed.meta.networkSettingSources).toEqual({});
+      expect(removed.meta.configIssues).toEqual([
+        {
+          path: "client.config.get",
+          key: "opencodeZenDisplay",
+          message: 'removed; use root "accountingDetail" ("summary" or "detailed")',
+        },
+      ]);
+    }
+
+    const explicitReplacement = await loadSdkConfig({
+      accountingDetail: "detailed",
+      opencodeZenDisplay: "default",
+    });
+    expect(explicitReplacement.config.accountingDetail).toBe("detailed");
+    expect(explicitReplacement.meta.settingSources).toEqual({
+      accountingDetail: "client.config.get",
+    });
+    expect(explicitReplacement.meta.configIssues).toHaveLength(1);
   });
 
   it("defaults and validates quota reset notifications with provenance", async () => {

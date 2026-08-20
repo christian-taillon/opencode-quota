@@ -22,6 +22,7 @@ import {
   type QuotaRuntimeClient,
   resolveQuotaRuntimeContext,
 } from "../src/lib/quota-runtime-context.js";
+import { buildQuotaProviderStateCacheKey } from "../src/lib/quota-state.js";
 import { __resetQuotaTelemetryForTests } from "../src/lib/quota-telemetry.js";
 import { createRuntimeProviderIdResolver } from "../src/lib/runtime-provider-ids.js";
 import { DEFAULT_CONFIG } from "../src/lib/types.js";
@@ -193,7 +194,7 @@ describe("quota runtime context", () => {
     );
   });
 
-  it("propagates provider config and explicit-source state to provider context", () => {
+  it("propagates provider config but keeps accounting detail out of provider and cache context", () => {
     const configMeta = createLoadConfigMeta();
     configMeta.settingSources.requestTimeoutMs = "test config";
 
@@ -203,17 +204,29 @@ describe("quota runtime context", () => {
       resolveRuntimeProviderIds: createRuntimeProviderIdResolver(client),
       config: {
         ...DEFAULT_CONFIG,
+        accountingDetail: "detailed",
         requestTimeoutMs: 12000,
-        opencodeZenDisplay: "detailed",
       },
       configMeta,
       session: {},
     });
 
     expect(providerContext.config?.requestTimeoutMs).toBe(12000);
-    expect(providerContext.config?.opencodeZenDisplay).toBe("detailed");
+    expect(providerContext.config).not.toHaveProperty("accountingDetail");
+    expect(providerContext.config).not.toHaveProperty("opencodeZenDisplay");
     expect(providerContext.config?.providerCacheTtlMs).toBe(DEFAULT_CONFIG.minIntervalMs);
     expect(providerContext.config?.requestTimeoutMsConfigured).toBe(true);
+
+    const summaryContext = createQuotaProviderRuntimeContext({
+      client,
+      resolveRuntimeProviderIds: createRuntimeProviderIdResolver(client),
+      config: { ...DEFAULT_CONFIG, accountingDetail: "summary", requestTimeoutMs: 12000 },
+      configMeta,
+      session: {},
+    });
+    expect(buildQuotaProviderStateCacheKey("openai", providerContext)).toBe(
+      buildQuotaProviderStateCacheKey("openai", summaryContext),
+    );
   });
 
   it("scopes telemetry tokens to enabled normalized provider configuration without I/O", () => {

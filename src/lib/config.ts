@@ -45,6 +45,7 @@ export const QUOTA_TOAST_SETTING_SOURCE_KEYS = [
   "tuiCommandDisplay",
   "formatStyle",
   "percentDisplayMode",
+  "accountingDetail",
   "resetTimeDecimals",
   "minIntervalMs",
   "requestTimeoutMs",
@@ -58,7 +59,6 @@ export const QUOTA_TOAST_SETTING_SOURCE_KEYS = [
   "cursorBillingCycleStartDay",
   "opencodeGoWindows",
   "opencodeMonthlyLimit",
-  "opencodeZenDisplay",
   "pricingSnapshot.source",
   "pricingSnapshot.autoRefresh",
   "showOnIdle",
@@ -156,6 +156,7 @@ type ValidatedQuotaToastPatch = {
   tuiCommandDisplay?: TuiCommandDisplay;
   formatStyle?: QuotaToastConfig["formatStyle"];
   percentDisplayMode?: PercentDisplayMode;
+  accountingDetail?: QuotaToastConfig["accountingDetail"];
   resetTimeDecimals?: number;
   minIntervalMs?: number;
   requestTimeoutMs?: number;
@@ -169,7 +170,6 @@ type ValidatedQuotaToastPatch = {
   cursorBillingCycleStartDay?: number;
   opencodeGoWindows?: Array<"rolling" | "weekly" | "monthly">;
   opencodeMonthlyLimit?: number;
-  opencodeZenDisplay?: "default" | "detailed";
   pricingSnapshot?: PricingSnapshotPatch;
   showOnIdle?: boolean;
   showOnQuestion?: boolean;
@@ -242,6 +242,10 @@ function isValidPricingSnapshotAutoRefresh(value: unknown): value is number {
 
 function isValidPercentDisplayMode(value: unknown): value is PercentDisplayMode {
   return value === "remaining" || value === "used";
+}
+
+function isValidAccountingDetail(value: unknown): value is QuotaToastConfig["accountingDetail"] {
+  return value === "summary" || value === "detailed";
 }
 
 function isValidTuiCommandDisplay(value: unknown): value is TuiCommandDisplay {
@@ -335,7 +339,6 @@ function cloneConfig(config: QuotaToastConfig): QuotaToastConfig {
     googleModels: [...config.googleModels],
     opencodeGoWindows: [...config.opencodeGoWindows],
     opencodeMonthlyLimit: config.opencodeMonthlyLimit,
-    opencodeZenDisplay: config.opencodeZenDisplay,
     pricingSnapshot: { ...config.pricingSnapshot },
     tuiSidebarPanel: { ...config.tuiSidebarPanel },
     tuiCompactStatus: { ...config.tuiCompactStatus },
@@ -661,6 +664,14 @@ function extractValidatedQuotaToastPatch(
     patch.percentDisplayMode = quotaToastConfig.percentDisplayMode;
   }
 
+  if (hasOwnKey(quotaToastConfig, "accountingDetail")) {
+    if (isValidAccountingDetail(quotaToastConfig.accountingDetail)) {
+      patch.accountingDetail = quotaToastConfig.accountingDetail;
+    } else {
+      reportIssue?.("accountingDetail", 'expected "summary" or "detailed"');
+    }
+  }
+
   if (
     hasOwnKey(quotaToastConfig, "resetTimeDecimals") &&
     isResetTimeDecimals(quotaToastConfig.resetTimeDecimals)
@@ -749,14 +760,10 @@ function extractValidatedQuotaToastPatch(
   }
 
   if (hasOwnKey(quotaToastConfig, "opencodeZenDisplay")) {
-    if (
-      quotaToastConfig.opencodeZenDisplay === "default" ||
-      quotaToastConfig.opencodeZenDisplay === "detailed"
-    ) {
-      patch.opencodeZenDisplay = quotaToastConfig.opencodeZenDisplay;
-    } else {
-      reportIssue?.("opencodeZenDisplay", 'expected "default" or "detailed"');
-    }
+    reportIssue?.(
+      "opencodeZenDisplay",
+      'removed; use root "accountingDetail" ("summary" or "detailed")',
+    );
   }
 
   if (hasOwnKey(quotaToastConfig, "pricingSnapshot")) {
@@ -927,6 +934,11 @@ function applyValidatedQuotaToastPatch(
     applySettingSource(settingSources, "percentDisplayMode", sourcePath);
   }
 
+  if (hasOwnKey(patch, "accountingDetail")) {
+    config.accountingDetail = patch.accountingDetail!;
+    applySettingSource(settingSources, "accountingDetail", sourcePath);
+  }
+
   if (hasOwnKey(patch, "resetTimeDecimals")) {
     config.resetTimeDecimals = patch.resetTimeDecimals;
     applySettingSource(settingSources, "resetTimeDecimals", sourcePath);
@@ -988,11 +1000,6 @@ function applyValidatedQuotaToastPatch(
   if (hasOwnKey(patch, "opencodeMonthlyLimit")) {
     config.opencodeMonthlyLimit = patch.opencodeMonthlyLimit;
     applySettingSource(settingSources, "opencodeMonthlyLimit", sourcePath);
-  }
-
-  if (hasOwnKey(patch, "opencodeZenDisplay")) {
-    config.opencodeZenDisplay = patch.opencodeZenDisplay;
-    applySettingSource(settingSources, "opencodeZenDisplay", sourcePath);
   }
 
   if (patch.pricingSnapshot) {

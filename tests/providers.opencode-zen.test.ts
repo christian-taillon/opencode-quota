@@ -187,27 +187,7 @@ describe("opencode Zen provider", () => {
     ]);
   });
 
-  it("emits limit and barValue when opencodeZenDisplay is detailed", async () => {
-    configured();
-    success({ monthlyLimit: 100, monthlyUsage: 575_000_000 });
-
-    const result = await opencodeZenProvider.fetch(context({ opencodeZenDisplay: "detailed" }));
-
-    expectAttemptedWithNoErrors(result);
-    expect(result.entries).toEqual([
-      {
-        accounting: budgetAccounting,
-        name: "",
-        group: "OpenCode Zen",
-        percentRemaining: 94.25,
-        right: "Limit $100.00",
-        barValue: "$42.50",
-      },
-    ]);
-    expect(result.presentation).toEqual({ singleWindowShowRight: true });
-  });
-
-  it("appends auto-reload to the right summary when reload is enabled (detailed)", async () => {
+  it("keeps reload fields out of the active provider presentation until provider migration", async () => {
     configured();
     success({
       monthlyLimit: 100,
@@ -217,13 +197,18 @@ describe("opencode Zen provider", () => {
       reloadTrigger: 5,
     });
 
-    const result = await opencodeZenProvider.fetch(context({ opencodeZenDisplay: "detailed" }));
+    const result = await opencodeZenProvider.fetch(context());
 
     expectAttemptedWithNoErrors(result);
-    expect(result.entries[0]).toMatchObject({
-      right: "Limit $100.00  Auto $20/5",
-      barValue: "$42.50",
-    });
+    expect(result.entries).toEqual([
+      {
+        accounting: budgetAccounting,
+        name: "",
+        group: "OpenCode Zen",
+        percentRemaining: 94.25,
+      },
+    ]);
+    expect(result.presentation).toBeUndefined();
   });
 
   it("prefers the positive plugin monthly-limit override", async () => {

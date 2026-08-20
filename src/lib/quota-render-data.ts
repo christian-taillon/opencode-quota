@@ -1,7 +1,9 @@
 import { getAnthropicNoDataMessage } from "../providers/anthropic.js";
 import { getProviders } from "../providers/registry.js";
+import { compareAccountingSemanticEntries } from "./accounting-format.js";
 import type { LoadConfigMeta } from "./config.js";
 import type {
+  QuotaPercentEntry,
   QuotaProvider,
   QuotaProviderContext,
   QuotaProviderPresentation,
@@ -10,8 +12,7 @@ import type {
   QuotaToastError,
   SessionTokensData,
 } from "./entries.js";
-
-import { isPercentEntry } from "./entries.js";
+import { cloneQuotaToastEntry, isPercentEntry } from "./entries.js";
 import { formatGroupedHeader } from "./grouped-header-format.js";
 import {
   getQuotaProviderDisplayLabel,
@@ -357,7 +358,7 @@ export async function collectQuotaStatusLiveProbes(params: {
     providerId: provider.id,
     result: {
       ...results[index]!,
-      entries: results[index]!.entries.map((entry) => ({ ...entry })),
+      entries: results[index]!.entries.map(cloneQuotaToastEntry),
       errors: results[index]!.errors.map((error) => ({ ...error })),
       ...(results[index]!.statusDetails
         ? { statusDetails: results[index]!.statusDetails!.map((detail) => ({ ...detail })) }
@@ -515,39 +516,170 @@ function selectSingleWindowEntries(entries: QuotaToastEntry[]): QuotaToastEntry[
   });
 }
 
+type IndexedQuotaEntry = {
+  entry: QuotaToastEntry;
+  index: number;
+};
+
+type IndexedPercentEntry = Omit<IndexedQuotaEntry, "entry"> & {
+  entry: QuotaPercentEntry;
+};
+
+function sortSemanticRuns(entries: IndexedQuotaEntry[]): IndexedQuotaEntry[] {
+  const sorted = [...entries];
+  let start = 0;
+
+  while (start < sorted.length) {
+    if (!sorted[start]?.entry.semantic) {
+      start += 1;
+      continue;
+    }
+
+    let end = start + 1;
+    while (end < sorted.length && sorted[end]?.entry.semantic) {
+      end += 1;
+    }
+
+    const run = sorted
+      .slice(start, end)
+      .sort(
+        (left, right) =>
+          compareAccountingSemanticEntries(left.entry, right.entry) || left.index - right.index,
+      );
+    sorted.splice(start, run.length, ...run);
+    start = end;
+  }
+
+  return sorted;
+}
+
+function isSemanticWindowPercentEntry(entry: QuotaToastEntry): entry is QuotaPercentEntry {
+  return isPercentEntry(entry) && entry.semantic?.metric.kind === "window";
+}
+
+function selectSemanticSingleWindowEntries(entries: IndexedQuotaEntry[]): IndexedQuotaEntry[] {
+  const partitions = new Map<
+    string | undefined,
+    Map<QuotaToastEntry["accounting"]["resultType"], IndexedPercentEntry[]>
+  >();
+
+  for (const indexed of entries) {
+    if (
+      !isSemanticWindowPercentEntry(indexed.entry) ||
+      !Number.isFinite(indexed.entry.percentRemaining)
+    ) {
+      continue;
+    }
+
+    const sourceId = indexed.entry.accounting.sourceId;
+    let byResultType = partitions.get(sourceId);
+    if (!byResultType) {
+      byResultType = new Map();
+      partitions.set(sourceId, byResultType);
+    }
+    const resultType = indexed.entry.accounting.resultType;
+    const partition = byResultType.get(resultType) ?? [];
+    partition.push({ entry: indexed.entry, index: indexed.index });
+    byResultType.set(resultType, partition);
+  }
+
+  const selectedIndexes = new Set<number>();
+  for (const byResultType of partitions.values()) {
+    for (const partition of byResultType.values()) {
+      const [first, ...remaining] = partition;
+      if (!first) continue;
+
+      let selected = first;
+      for (const candidate of remaining) {
+        const percentDifference =
+          candidate.entry.percentRemaining - selected.entry.percentRemaining;
+        const semanticOrder = compareAccountingSemanticEntries(candidate.entry, selected.entry);
+        if (
+          percentDifference < 0 ||
+          (percentDifference === 0 &&
+            (semanticOrder < 0 || (semanticOrder === 0 && candidate.index < selected.index)))
+        ) {
+          selected = candidate;
+        }
+      }
+      selectedIndexes.add(selected.index);
+    }
+  }
+
+  return entries.filter(
+    (indexed) => !isSemanticWindowPercentEntry(indexed.entry) || selectedIndexes.has(indexed.index),
+  );
+}
+
+function projectSingleWindowEntry(
+  entry: QuotaToastEntry,
+  presentation: QuotaProviderPresentation | undefined,
+): QuotaToastEntry {
+  const nameEntry =
+    presentation?.classicStrategy === "preserve" && !presentation.redundantQuotaFamily
+      ? { ...entry, group: undefined }
+      : entry;
+  return renameSingleWindowEntry(
+    stripSingleWindowEntryMeta(entry, presentation?.singleWindowShowRight ?? false),
+    buildSingleWindowName({
+      entry: nameEntry,
+      singleWindowDisplayName:
+        presentation?.classicStrategy === "preserve"
+          ? (presentation.singleWindowDisplayName ?? entry.name)
+          : presentation?.singleWindowDisplayName,
+    }),
+  );
+}
+
 function projectProviderResultToStyle(
   result: QuotaProviderResult,
   style: QuotaFormatStyle,
+  accountingDetail: QuotaToastConfig["accountingDetail"],
 ): QuotaToastEntry[] {
   const presentation = normalizeSingleWindowPresentation(result.presentation);
-  const entries = result.entries.map((entry) =>
-    suppressRedundantQuotaFamily({ ...entry }, presentation?.redundantQuotaFamily),
-  );
+  const entries = result.entries
+    .map(cloneQuotaToastEntry)
+    .filter(
+      (entry) =>
+        !entry.semantic ||
+        accountingDetail === "detailed" ||
+        entry.semantic.prominence === "primary",
+    )
+    .map((entry, index) => ({
+      entry: suppressRedundantQuotaFamily(entry, presentation?.redundantQuotaFamily),
+      index,
+    }));
   const definition = getQuotaFormatStyleDefinition(style);
   if (definition.projection === "allWindows") {
-    return entries;
+    return sortSemanticRuns(entries).map(({ entry }) => entry);
   }
 
-  if (presentation?.classicStrategy === "preserve") {
-    return entries.map((entry) => {
-      const nameEntry = presentation.redundantQuotaFamily ? entry : { ...entry, group: undefined };
-      return renameSingleWindowEntry(
-        stripSingleWindowEntryMeta(entry, presentation?.singleWindowShowRight ?? false),
-        buildSingleWindowName({
-          entry: nameEntry,
-          singleWindowDisplayName: presentation.singleWindowDisplayName ?? entry.name,
-        }),
-      );
-    });
+  const semanticEntries = entries.filter(({ entry }) => entry.semantic);
+  if (semanticEntries.length === 0) {
+    const legacyEntries = entries.map(({ entry }) => entry);
+    const selectedEntries =
+      presentation?.classicStrategy === "preserve"
+        ? legacyEntries
+        : selectSingleWindowEntries(legacyEntries);
+    return selectedEntries.map((entry) => projectSingleWindowEntry(entry, presentation));
   }
-  return selectSingleWindowEntries(entries).map((selectedEntry) =>
-    renameSingleWindowEntry(
-      stripSingleWindowEntryMeta(selectedEntry, presentation?.singleWindowShowRight ?? false),
-      buildSingleWindowName({
-        entry: selectedEntry,
-        singleWindowDisplayName: presentation?.singleWindowDisplayName,
-      }),
-    ),
+
+  const selectedSemanticEntries = selectSemanticSingleWindowEntries(semanticEntries);
+  const legacyEntries = entries.filter(({ entry }) => !entry.semantic);
+  const selectedLegacyEntrySet = new Set(
+    presentation?.classicStrategy === "preserve"
+      ? legacyEntries.map(({ entry }) => entry)
+      : selectSingleWindowEntries(legacyEntries.map(({ entry }) => entry)),
+  );
+  const selectedLegacyEntries = legacyEntries.filter(({ entry }) =>
+    selectedLegacyEntrySet.has(entry),
+  );
+  const recombined = [...selectedSemanticEntries, ...selectedLegacyEntries].sort(
+    (left, right) => left.index - right.index,
+  );
+
+  return sortSemanticRuns(recombined).map(({ entry }) =>
+    projectSingleWindowEntry(entry, presentation),
   );
 }
 
@@ -625,8 +757,9 @@ function buildExplicitProviderIssues(params: {
 function projectProviderResultsToStyle(
   results: QuotaProviderResult[],
   style: QuotaFormatStyle,
+  accountingDetail: QuotaToastConfig["accountingDetail"],
 ): QuotaToastEntry[] {
-  return results.flatMap((result) => projectProviderResultToStyle(result, style));
+  return results.flatMap((result) => projectProviderResultToStyle(result, style, accountingDetail));
 }
 
 function packageQuotaRenderData(params: {
@@ -728,7 +861,7 @@ export async function collectQuotaRenderData(params: {
   });
 
   const style = params.formatStyle ?? params.config.formatStyle;
-  const entries = projectProviderResultsToStyle(results, style);
+  const entries = projectProviderResultsToStyle(results, style, params.config.accountingDetail);
   const errors = results.flatMap((result) => result.errors);
   const attemptedAny = results.some((result) => result.attempted);
 
@@ -778,7 +911,9 @@ export async function collectQuotaRenderData(params: {
   let singleWindowData: QuotaRenderData | null | undefined;
   if (params.includeAllWindowsData) {
     const allWindowsEntries =
-      style === "allWindows" ? entries : projectProviderResultsToStyle(results, "allWindows");
+      style === "allWindows"
+        ? entries
+        : projectProviderResultsToStyle(results, "allWindows", params.config.accountingDetail);
     allWindowsData = packageQuotaRenderData({
       entries: allWindowsEntries,
       errors: [...errors],
@@ -787,7 +922,11 @@ export async function collectQuotaRenderData(params: {
 
     if (style === "allWindows") {
       singleWindowData = packageQuotaRenderData({
-        entries: projectProviderResultsToStyle(results, "singleWindow"),
+        entries: projectProviderResultsToStyle(
+          results,
+          "singleWindow",
+          params.config.accountingDetail,
+        ),
         errors: [...errors],
         sessionTokens,
       });
