@@ -8,7 +8,7 @@
  */
 
 import type { QuotaToastEntry, QuotaToastError, SessionTokensData } from "./entries.js";
-import { isValueEntry } from "./entries.js";
+import { isPercentEntry, isValueEntry } from "./entries.js";
 import {
   bar,
   formatDisplayedPercentLabel,
@@ -129,14 +129,14 @@ function buildQuotaCommandDocument(params: {
         continue;
       }
 
+      if (!isPercentEntry(row)) continue;
       const pctLabel = formatDisplayedPercentLabel(row.percentRemaining, params.percentDisplayMode);
-      const barValue = row.barValue?.trim() || pctLabel;
       const displayedPercent = resolveDisplayedPercent(
         row.percentRemaining,
         params.percentDisplayMode,
       );
       lines.push(
-        `  ${label}  ${bar(displayedPercent, QUOTA_COMMAND_BAR_WIDTH)}  ${padLeft(barValue, Math.max(9, barValue.length))}${details}`,
+        `  ${label}  ${bar(displayedPercent, QUOTA_COMMAND_BAR_WIDTH)}  ${padLeft(pctLabel, Math.max(9, pctLabel.length))}${details}`,
       );
     }
     return {

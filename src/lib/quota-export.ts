@@ -8,7 +8,7 @@ import type {
   QuotaProviderResult,
   QuotaToastEntry,
 } from "./entries.js";
-import { isValueEntry } from "./entries.js";
+import { isPercentEntry, isValueEntry } from "./entries.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import type {
   QuotaExport,
@@ -115,9 +115,11 @@ function toExportEntry(entry: QuotaToastEntry): QuotaExportEntry {
     ...(resetAt !== undefined ? { resetAt } : {}),
   };
 
-  return isValueEntry(entry)
-    ? { ...base, renderType: "value", value: entry.value }
-    : { ...base, renderType: "percent", percentRemaining: entry.percentRemaining };
+  if (isValueEntry(entry)) return { ...base, renderType: "value", value: entry.value };
+  if (isPercentEntry(entry)) {
+    return { ...base, renderType: "percent", percentRemaining: entry.percentRemaining };
+  }
+  throw new TypeError("Structured accounting export is not available in this phase");
 }
 
 function buildQuotaProviderStatuses(params: {

@@ -6,7 +6,7 @@
  */
 
 import type { QuotaToastEntry, QuotaToastError, SessionTokensData } from "./entries.js";
-import { isValueEntry } from "./entries.js";
+import { isPercentEntry, isValueEntry } from "./entries.js";
 import {
   bar,
   DISPLAYED_PERCENT_LABEL_WIDTH,
@@ -82,22 +82,13 @@ export function formatQuotaRowsGrouped(params: {
   const percentCol = Math.max(
     DISPLAYED_PERCENT_LABEL_WIDTH,
     ...(params.entries ?? [])
-      .filter((entry) => !isValueEntry(entry))
+      .filter(isPercentEntry)
       .map(
         (entry) =>
           formatDisplayedPercentLabel(entry.percentRemaining, params.percentDisplayMode).length,
       ),
   );
-  const requestedBarValueCol = Math.max(
-    percentCol,
-    ...(params.entries ?? [])
-      .filter((entry) => !isValueEntry(entry))
-      .map((entry) => entry.barValue?.trim().length ?? 0),
-  );
-  const barValueCol = Math.min(
-    requestedBarValueCol,
-    Math.max(percentCol, maxWidth - separator.length - 10),
-  );
+  const barValueCol = percentCol;
   const barWidth = Math.max(10, maxWidth - separator.length - barValueCol);
   const timeCol = isTiny ? 6 : isNarrow ? 7 : 7;
 
@@ -172,6 +163,7 @@ export function formatQuotaRowsGrouped(params: {
         );
         continue;
       }
+      if (!isPercentEntry(entry)) continue;
 
       const label = resolveGroupedRowLabel(entry);
 
@@ -205,8 +197,7 @@ export function formatQuotaRowsGrouped(params: {
         const timeWidth = isResetTimeDecimals(params.resetTimeDecimals)
           ? Math.max(timeCol, timeStr.length)
           : timeCol;
-        const barSuffix = entry.barValue?.trim() || percentLabel;
-        const visibleBarSuffix = barSuffix.slice(0, barValueCol);
+        const visibleBarSuffix = percentLabel.slice(0, barValueCol);
         if (isValueRow) {
           const tinyNameCol = Math.max(
             1,
@@ -256,10 +247,9 @@ export function formatQuotaRowsGrouped(params: {
         );
       }
 
-      // Line 2: bar + percent (or a custom barValue when provided)
+      // Line 2: bar + percent
       const barCell = bar(displayedPercent, barWidth);
-      const barSuffix = entry.barValue?.trim() || percentLabel;
-      const suffixCell = padLeft(barSuffix.slice(0, barValueCol), barValueCol);
+      const suffixCell = padLeft(percentLabel.slice(0, barValueCol), barValueCol);
       lines.push([barCell, suffixCell].join(separator));
     }
   }

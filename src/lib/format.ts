@@ -3,7 +3,7 @@
  */
 
 import type { QuotaToastEntry, QuotaToastError, SessionTokensData } from "./entries.js";
-import { isValueEntry } from "./entries.js";
+import { isPercentEntry, isValueEntry } from "./entries.js";
 import {
   bar,
   DISPLAYED_PERCENT_LABEL_WIDTH,
@@ -129,23 +129,14 @@ export function formatQuotaRows(params: {
   const percentCol = Math.max(
     DISPLAYED_PERCENT_LABEL_WIDTH,
     ...(params.entries ?? [])
-      .filter((entry) => !isValueEntry(entry))
+      .filter(isPercentEntry)
       .map(
         (entry) =>
           formatDisplayedPercentLabel(entry.percentRemaining, params.percentDisplayMode).length,
       ),
   );
 
-  const requestedBarValueCol = Math.max(
-    percentCol,
-    ...(params.entries ?? [])
-      .filter((entry) => !isValueEntry(entry))
-      .map((entry) => entry.barValue?.trim().length ?? 0),
-  );
-  const barValueCol = Math.min(
-    requestedBarValueCol,
-    Math.max(percentCol, maxWidth - separator.length - 10),
-  );
+  const barValueCol = percentCol;
   const timeCol = isTiny ? 6 : isNarrow ? 7 : 7;
 
   // Bar width: use most of maxWidth, leaving room for separator + suffix on line 2.
@@ -161,12 +152,10 @@ export function formatQuotaRows(params: {
     resetIso: string | undefined,
     remaining: number,
     rightSummary?: string,
-    barValue?: string,
   ) => {
     const displayedPercent = resolveDisplayedPercent(remaining, params.percentDisplayMode);
     const percentLabel = formatDisplayedPercentLabel(remaining, params.percentDisplayMode);
-    const barSuffix = barValue?.trim() || percentLabel;
-    const visibleBarSuffix = barSuffix.slice(0, barValueCol);
+    const visibleBarSuffix = percentLabel.slice(0, barValueCol);
     const summary = rightSummary?.trim() || "";
     const leftText = summary ? `${name} ${summary}` : name;
 
@@ -258,13 +247,12 @@ export function formatQuotaRows(params: {
   for (const entry of params.entries ?? []) {
     if (isValueEntry(entry)) {
       addValueEntry(entry.name, entry.resetTimeIso, entry.value);
-    } else {
+    } else if (isPercentEntry(entry)) {
       addPercentEntry(
         buildSingleWindowPercentEntryDisplayName(entry),
         entry.resetTimeIso,
         entry.percentRemaining,
         entry.right,
-        entry.barValue,
       );
     }
   }

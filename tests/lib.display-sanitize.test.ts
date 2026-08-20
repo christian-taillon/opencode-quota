@@ -1,35 +1,110 @@
 import { describe, expect, it } from "vitest";
 
 import { sanitizeQuotaProviderResult } from "../src/lib/display-sanitize.js";
+import type { QuotaProviderResult } from "../src/lib/entries.js";
 import { accountingContractResult } from "./fixtures/accounting-contract.js";
 
+const ACCOUNTING = accountingContractResult.entries[0]!.accounting;
+
 describe("sanitizeQuotaProviderResult", () => {
-  it("preserves presentation and owns nested accounting metadata", () => {
+  it("sanitizes and owns nested structured accounting data", () => {
     const input = {
-      ...accountingContractResult,
+      attempted: true,
       entries: [
         {
-          ...accountingContractResult.entries[0]!,
-          barValue: "  ¤ $42.50\nspoof\u001b[31m  ",
+          accounting: { ...ACCOUNTING },
+          kind: "percent",
+          name: "Budget\u001b[31m",
+          group: "Example\u001b[0m",
+          metricLabel: "Monthly\u001b[31m",
+          percentRemaining: 75,
+          semantic: {
+            metric: { kind: "named", name: "Known\u001b[31m API" },
+            prominence: "primary",
+          },
+          basis: {
+            used: {
+              quantity: {
+                decimal: "5.75",
+                unit: { kind: "custom", symbol: "NANO\u001b[31m" },
+              },
+              authority: "provider_reported",
+            },
+          },
         },
-        ...accountingContractResult.entries.slice(1),
+        {
+          accounting: { ...ACCOUNTING, resultType: "balance" },
+          kind: "quantity",
+          name: "Balance",
+          semantic: {
+            metric: { kind: "component", component: "current_balance" },
+            prominence: "supplementary",
+          },
+          quantity: { decimal: "42.500", unit: { kind: "currency", code: "USD" } },
+        },
+        {
+          accounting: { ...ACCOUNTING, resultType: "status" },
+          kind: "boolean",
+          name: "Reload",
+          semantic: {
+            metric: { kind: "component", component: "auto_reload" },
+            prominence: "supplementary",
+          },
+          value: true,
+        },
+        {
+          accounting: { ...ACCOUNTING, resultType: "status" },
+          kind: "value",
+          name: "Legacy",
+          value: "Active\u001b[31m",
+        },
       ],
-      statusDetails: [{ key: "balance\u001b[31m", value: "$42.50\u001b[0m" }],
-      rawDetails: [{ key: "usage\u001b[31m", value: "$2.50\u001b[0m" }],
+      errors: [{ label: "Remote\u001b[31m", message: "failed\u001b[0m" }],
+      statusDetails: [{ key: "balance\u001b[31m", value: "USD 42.50\u001b[0m" }],
+      rawDetails: [{ key: "usage\u001b[31m", value: "USD 2.50\u001b[0m" }],
       presentation: {
-        singleWindowDisplayName: "Fixture",
+        singleWindowDisplayName: "Fixture\u001b[31m",
         singleWindowShowRight: true,
-        redundantQuotaFamily: "Claude",
+        redundantQuotaFamily: "Claude\u001b[31m",
         classicStrategy: "preserve" as const,
       },
-    };
+    } satisfies QuotaProviderResult;
 
     const sanitized = sanitizeQuotaProviderResult(input);
-    expect(sanitized.presentation).toEqual(input.presentation);
-    expect(sanitized.statusDetails).toEqual([{ key: "balance", value: "$42.50" }]);
-    expect(sanitized.rawDetails).toEqual([{ key: "usage", value: "$2.50" }]);
-    expect(sanitized.entries[0]).toMatchObject({ barValue: "¤ $42.50 spoof" });
-    expect(sanitized.entries[0]?.accounting).toEqual(input.entries[0]?.accounting);
-    expect(sanitized.entries[0]?.accounting).not.toBe(input.entries[0]?.accounting);
+    expect(sanitized.entries[0]).toMatchObject({
+      name: "Budget",
+      group: "Example",
+      metricLabel: "Monthly",
+      semantic: { metric: { kind: "named", name: "Known API" } },
+      basis: { used: { quantity: { unit: { kind: "custom", symbol: "NANO" } } } },
+    });
+    expect(sanitized.entries[1]).toMatchObject({
+      quantity: { decimal: "42.500", unit: { kind: "currency", code: "USD" } },
+    });
+    expect(sanitized.entries[2]).toMatchObject({ kind: "boolean", value: true });
+    expect(sanitized.entries[3]).toMatchObject({ kind: "value", value: "Active" });
+    expect(sanitized.errors).toEqual([{ label: "Remote", message: "failed" }]);
+    expect(sanitized.statusDetails).toEqual([{ key: "balance", value: "USD 42.50" }]);
+    expect(sanitized.rawDetails).toEqual([{ key: "usage", value: "USD 2.50" }]);
+    expect(sanitized.presentation).toEqual({
+      singleWindowDisplayName: "Fixture",
+      singleWindowShowRight: true,
+      redundantQuotaFamily: "Claude",
+      classicStrategy: "preserve",
+    });
+
+    const sanitizedPercent = sanitized.entries[0] as any;
+    const inputPercent = input.entries[0] as any;
+    expect(sanitizedPercent.accounting).not.toBe(inputPercent.accounting);
+    expect(sanitizedPercent.semantic).not.toBe(inputPercent.semantic);
+    expect(sanitizedPercent.semantic.metric).not.toBe(inputPercent.semantic.metric);
+    expect(sanitizedPercent.basis.used).not.toBe(inputPercent.basis.used);
+    expect(sanitizedPercent.basis.used.quantity).not.toBe(inputPercent.basis.used.quantity);
+    expect(sanitizedPercent.basis.used.quantity.unit).not.toBe(
+      inputPercent.basis.used.quantity.unit,
+    );
+    expect(sanitized.presentation).not.toBe(input.presentation);
+    expect(sanitized.statusDetails).not.toBe(input.statusDetails);
+    expect(sanitized.rawDetails).not.toBe(input.rawDetails);
   });
 });

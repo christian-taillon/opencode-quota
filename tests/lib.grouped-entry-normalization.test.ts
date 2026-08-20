@@ -6,43 +6,59 @@ import {
 import { accountingContractResult } from "./fixtures/accounting-contract.js";
 
 describe("normalizeGroupedQuotaEntries", () => {
-  it("preserves accounting metadata while grouping and sorting", () => {
+  it("preserves and owns accounting metadata while grouping and sorting", () => {
     const entries = accountingContractResult.entries.slice(0, 2);
     const normalized = normalizeGroupedQuotaEntries(entries, "toast");
 
-    expect(normalized.map((entry) => entry.accounting)).toEqual(
-      entries.map((entry) => entry.accounting),
-    );
+    for (const entry of entries) {
+      const matching = normalized.find((candidate) => candidate.name === entry.name)!;
+      expect(matching.accounting).toEqual(entry.accounting);
+      expect(matching.accounting).not.toBe(entry.accounting);
+    }
   });
 
-  it("trims bar values and discards empty ones", () => {
+  it("preserves and owns nested quantity, semantic, and basis data", () => {
     const entries = [
       {
-        name: "Detailed",
+        accounting: accountingContractResult.entries[0]!.accounting,
+        kind: "percent" as const,
+        name: "Monthly",
         group: "Example",
         percentRemaining: 75,
-        barValue: "  $42.50  ",
+        semantic: {
+          metric: { kind: "window" as const, window: "month" as const },
+          prominence: "primary" as const,
+        },
+        basis: {
+          remaining: {
+            quantity: { decimal: "75", unit: { kind: "count" as const, unit: "credit" as const } },
+            authority: "provider_reported" as const,
+          },
+        },
       },
       {
-        name: "Default",
+        accounting: {
+          ...accountingContractResult.entries[0]!.accounting,
+          resultType: "balance" as const,
+        },
+        kind: "quantity" as const,
+        name: "Balance",
         group: "Example",
-        percentRemaining: 50,
-        barValue: "   ",
+        semantic: {
+          metric: { kind: "component" as const, component: "current_balance" as const },
+          prominence: "primary" as const,
+        },
+        quantity: { decimal: "12.50", unit: { kind: "currency" as const, code: "USD" } },
       },
     ];
 
-    expect(normalizeGroupedQuotaEntries(entries, "toast")).toEqual([
-      {
-        ...entries[0],
-        group: "Example",
-        barValue: "$42.50",
-      },
-      {
-        name: "Default",
-        group: "Example",
-        percentRemaining: 50,
-      },
-    ]);
+    const normalized = normalizeGroupedQuotaEntries(entries, "toast");
+    expect(normalized).toEqual(entries);
+    expect(normalized[0]!.semantic).not.toBe(entries[0]!.semantic);
+    expect((normalized[0] as any).basis.remaining.quantity).not.toBe(
+      entries[0]!.basis.remaining.quantity,
+    );
+    expect((normalized[1] as any).quantity).not.toBe(entries[1]!.quantity);
   });
 
   it("applies the Google fallback label only for /quota rendering", () => {
@@ -185,6 +201,43 @@ describe("normalizeGroupedQuotaEntries", () => {
       "Monthly:",
       "Balance:",
       "MCP:",
+    ]);
+  });
+
+  it("sorts semantic runs without moving rows across legacy anchors", () => {
+    const accounting = accountingContractResult.entries[0]!.accounting;
+    const semantic = (resultType: "quota" | "budget", metric: "day" | "month" | "aggregate") => ({
+      accounting: { ...accounting, resultType },
+      name: `${resultType}-${metric}`,
+      group: "Example",
+      percentRemaining: 50,
+      semantic: {
+        metric:
+          metric === "aggregate"
+            ? ({ kind: "aggregate" } as const)
+            : ({ kind: "window", window: metric } as const),
+        prominence: "primary" as const,
+      },
+    });
+    const legacy = {
+      accounting,
+      name: "Legacy",
+      group: "Example",
+      label: "RPM:",
+      percentRemaining: 50,
+    };
+    const entries = [
+      semantic("quota", "day"),
+      legacy,
+      semantic("budget", "aggregate"),
+      semantic("quota", "month"),
+    ];
+
+    expect(normalizeGroupedQuotaEntries(entries, "toast").map((entry) => entry.name)).toEqual([
+      "quota-day",
+      "Legacy",
+      "quota-month",
+      "budget-aggregate",
     ]);
   });
 

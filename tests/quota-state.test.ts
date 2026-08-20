@@ -500,6 +500,149 @@ describe("quota-state shared cache", () => {
     expect(provider.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("accepts all four entry variants and isolates every nested cache clone", async () => {
+    const { __resetQuotaStateForTests, fetchQuotaProviderResult } = await import(
+      "../src/lib/quota-state.js"
+    );
+    __resetQuotaStateForTests();
+    const entries = [
+      {
+        accounting: { ...TEST_ACCOUNTING, resultType: "budget" },
+        kind: "percent",
+        name: "Monthly budget",
+        percentRemaining: 75,
+        semantic: {
+          metric: { kind: "window", window: "month" },
+          prominence: "primary",
+        },
+        basis: {
+          used: {
+            quantity: { decimal: "25.00", unit: { kind: "currency", code: "USD" } },
+            authority: "provider_reported",
+          },
+          limit: {
+            quantity: { decimal: "100", unit: { kind: "currency", code: "USD" } },
+            authority: "user_configured",
+          },
+          remaining: {
+            quantity: { decimal: "75", unit: { kind: "currency", code: "USD" } },
+            authority: "locally_derived",
+          },
+        },
+      },
+      {
+        accounting: { ...TEST_ACCOUNTING, resultType: "status" },
+        kind: "value",
+        name: "Legacy status",
+        value: "Active",
+      },
+      {
+        accounting: { ...TEST_ACCOUNTING, resultType: "balance" },
+        kind: "quantity",
+        name: "Balance",
+        semantic: {
+          metric: { kind: "component", component: "current_balance" },
+          prominence: "supplementary",
+        },
+        quantity: { decimal: "42.500", unit: { kind: "currency", code: "USD" } },
+      },
+      {
+        accounting: { ...TEST_ACCOUNTING, resultType: "status" },
+        kind: "boolean",
+        name: "Auto-reload",
+        semantic: {
+          metric: { kind: "component", component: "auto_reload" },
+          prominence: "supplementary",
+        },
+        value: true,
+      },
+    ] as const;
+    const provider = {
+      id: "synthetic",
+      isAvailable: vi.fn(),
+      fetch: vi.fn().mockResolvedValue({ attempted: true, entries, errors: [] }),
+    } as any;
+    const ctx = createTestContext();
+
+    const first = await fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    (first.entries[0] as any).semantic.metric.window = "day";
+    (first.entries[0] as any).basis.limit.quantity.decimal = "1";
+    (first.entries[0] as any).basis.limit.quantity.unit.code = "CNY";
+    (first.entries[2] as any).quantity.decimal = "0";
+    (first.entries[3] as any).value = false;
+
+    const second = await fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    expect(second.entries).toEqual(entries);
+    expect((second.entries[0] as any).semantic).not.toBe(entries[0].semantic);
+    expect((second.entries[0] as any).basis.limit.quantity).not.toBe(
+      entries[0].basis.limit.quantity,
+    );
+    expect((second.entries[2] as any).quantity).not.toBe(entries[2].quantity);
+    expect(provider.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares one in-flight fetch and returns independent snapshots", async () => {
+    const { __resetQuotaStateForTests, fetchQuotaProviderResult } = await import(
+      "../src/lib/quota-state.js"
+    );
+    __resetQuotaStateForTests();
+    let resolveFetch!: (value: unknown) => void;
+    const provider = {
+      id: "synthetic",
+      isAvailable: vi.fn(),
+      fetch: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveFetch = resolve;
+          }),
+      ),
+    } as any;
+    const ctx = createTestContext();
+
+    const firstPromise = fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    const secondPromise = fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    await vi.waitFor(() => expect(provider.fetch).toHaveBeenCalledTimes(1));
+    resolveFetch({
+      attempted: true,
+      entries: [{ accounting: TEST_ACCOUNTING, name: "Synthetic", percentRemaining: 80 }],
+      errors: [],
+    });
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+    expect(first).toEqual(second);
+    expect(first).not.toBe(second);
+    expect(first.entries[0]).not.toBe(second.entries[0]);
+  });
+
+  it("clears a thrown fetch from the in-flight slot", async () => {
+    const { __resetQuotaStateForTests, fetchQuotaProviderResult } = await import(
+      "../src/lib/quota-state.js"
+    );
+    __resetQuotaStateForTests();
+    const provider = {
+      id: "synthetic",
+      isAvailable: vi.fn(),
+      fetch: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("boom"))
+        .mockResolvedValueOnce({
+          attempted: true,
+          entries: [{ accounting: TEST_ACCOUNTING, name: "Synthetic", percentRemaining: 80 }],
+          errors: [],
+        }),
+    } as any;
+    const ctx = createTestContext();
+
+    await expect(fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 })).rejects.toThrow(
+      "boom",
+    );
+    await expect(fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 })).resolves.toMatchObject(
+      {
+        entries: [{ percentRemaining: 80 }],
+      },
+    );
+    expect(provider.fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("publishes authoritative cache timestamps and retires superseded bypass snapshots", async () => {
     const callbacks = new Map<string, (result: { observe(value: number): void }) => void>();
     const collectMetric = (name: string) => {
@@ -743,6 +886,31 @@ describe("quota-state shared cache", () => {
     await quotaStateB.fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
 
     expect(provider.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps cache read and write failures nonfatal", async () => {
+    const quotaState = await import("../src/lib/quota-state.js");
+    quotaState.__resetQuotaStateForTests();
+    const provider = {
+      id: "synthetic",
+      isAvailable: vi.fn(),
+      fetch: vi.fn().mockResolvedValue({
+        attempted: true,
+        entries: [{ accounting: TEST_ACCOUNTING, name: "Fresh", percentRemaining: 55 }],
+        errors: [],
+      }),
+    } as any;
+    const ctx = createTestContext();
+    const key = quotaState.buildQuotaProviderStateCacheKey(provider.id, ctx);
+    const path = quotaState.getQuotaProviderStateCacheFilePath(provider.id, key);
+    await mkdir(path, { recursive: true });
+
+    const first = await quotaState.fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    const second = await quotaState.fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+
+    expect(first.entries[0]?.name).toBe("Fresh");
+    expect(second).toEqual(first);
+    expect(provider.fetch).toHaveBeenCalledTimes(1);
   });
 
   it("treats cache package-version mismatches as a miss and refetches live data", async () => {
@@ -1109,6 +1277,57 @@ describe("quota-state shared cache", () => {
     expect(provider.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects and replaces a cache v2 row containing barValue", async () => {
+    const quotaState = await import("../src/lib/quota-state.js");
+    quotaState.__resetQuotaStateForTests();
+    const provider = {
+      id: "synthetic",
+      isAvailable: vi.fn(),
+      fetch: vi.fn().mockResolvedValue({
+        attempted: true,
+        entries: [{ accounting: TEST_ACCOUNTING, name: "Fresh", percentRemaining: 90 }],
+        errors: [],
+      }),
+    } as any;
+    const ctx = createTestContext();
+    const key = quotaState.buildQuotaProviderStateCacheKey(provider.id, ctx);
+    const path = quotaState.getQuotaProviderStateCacheFilePath(provider.id, key);
+    const { getPackageVersion } = await import("../src/lib/version.js");
+    const packageVersion = (await getPackageVersion()) ?? "unknown";
+
+    await mkdir(`${TEST_RUNTIME_ROOT}/cache/quota-provider-state`, { recursive: true });
+    await writeFile(
+      path,
+      JSON.stringify({
+        version: 2,
+        packageVersion,
+        key,
+        providerId: provider.id,
+        timestamp: Date.now(),
+        result: {
+          attempted: true,
+          entries: [
+            {
+              accounting: TEST_ACCOUNTING,
+              name: "Stale",
+              percentRemaining: 50,
+              barValue: "USD 42.50",
+            },
+          ],
+          errors: [],
+        },
+      }),
+      "utf-8",
+    );
+
+    const result = await quotaState.fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    expect(result.entries[0]?.name).toBe("Fresh");
+    expect(provider.fetch).toHaveBeenCalledTimes(1);
+    const replacement = JSON.parse(await (await import("fs/promises")).readFile(path, "utf8"));
+    expect(replacement.version).toBe(2);
+    expect(JSON.stringify(replacement)).not.toContain("barValue");
+  });
+
   it("does not cache a malformed live provider result", async () => {
     const { fetchQuotaProviderResult, readCachedProviderResult } = await import(
       "../src/lib/quota-state.js"
@@ -1139,8 +1358,146 @@ describe("quota-state shared cache", () => {
     });
   });
 
-  it("accepts a live percent entry with right and no label (opencode Zen shape)", async () => {
+  it("rejects malformed structured variants and basis invariants", async () => {
     const { fetchQuotaProviderResult } = await import("../src/lib/quota-state.js");
+    const semantic = {
+      metric: { kind: "component", component: "current_balance" },
+      prominence: "primary",
+    };
+    const base = { accounting: TEST_ACCOUNTING, name: "Invalid" };
+    const invalidEntries = [
+      {
+        ...base,
+        kind: "quantity",
+        semantic: { metric: { kind: "aggregate" } },
+        quantity: { decimal: "1", unit: { kind: "currency", code: "USD" } },
+      },
+      {
+        ...base,
+        kind: "quantity",
+        semantic,
+        quantity: { decimal: "01", unit: { kind: "currency", code: "USD" } },
+      },
+      {
+        ...base,
+        kind: "quantity",
+        semantic,
+        quantity: { decimal: "1", unit: { kind: "currency", code: "usd" } },
+      },
+      {
+        ...base,
+        kind: "quantity",
+        semantic: { metric: { kind: "named", name: "\u001b[31m" }, prominence: "primary" },
+        quantity: { decimal: "1", unit: { kind: "currency", code: "USD" } },
+      },
+      { ...base, kind: "boolean", semantic, value: "true" },
+      {
+        ...base,
+        kind: "percent",
+        percentRemaining: 50,
+        basis: {
+          used: {
+            quantity: { decimal: "-1", unit: { kind: "count", unit: "token" } },
+            authority: "provider_reported",
+          },
+        },
+      },
+      {
+        ...base,
+        kind: "percent",
+        percentRemaining: 50,
+        basis: {
+          used: {
+            quantity: { decimal: "1", unit: { kind: "count", unit: "token" } },
+            authority: "provider_reported",
+          },
+          limit: {
+            quantity: { decimal: "10", unit: { kind: "count", unit: "request" } },
+            authority: "provider_reported",
+          },
+        },
+      },
+      {
+        ...base,
+        accounting: { ...TEST_ACCOUNTING, authority: "user_configured" },
+        percentRemaining: 50,
+      },
+      {
+        ...base,
+        percentRemaining: 50,
+        resetTimeIso: "\u001b[31m2026-08-01T00:00:00.000Z",
+      },
+    ];
+
+    for (const entry of invalidEntries) {
+      const provider = {
+        id: "synthetic",
+        isAvailable: vi.fn(),
+        fetch: vi.fn().mockResolvedValue({ attempted: true, entries: [entry], errors: [] }),
+      } as any;
+      await expect(
+        fetchQuotaProviderResult({
+          provider,
+          ctx: createTestContext(),
+          ttlMs: 60_000,
+          bypassCache: true,
+        }),
+      ).resolves.toMatchObject({
+        attempted: true,
+        entries: [],
+        errors: [{ message: "Invalid normalized provider result" }],
+      });
+    }
+  });
+
+  it("sanitizes structured text before caching and reuses only the safe snapshot", async () => {
+    const quotaStateA = await import("../src/lib/quota-state.js");
+    quotaStateA.__resetQuotaStateForTests();
+    const provider = {
+      id: "synthetic",
+      isAvailable: vi.fn(),
+      fetch: vi.fn().mockResolvedValue({
+        attempted: true,
+        entries: [
+          {
+            accounting: TEST_ACCOUNTING,
+            kind: "quantity",
+            name: "Known balance\u001b[31m",
+            group: "Synthetic\u001b[0m",
+            semantic: {
+              metric: { kind: "named", name: "Known\u001b[31m API" },
+              prominence: "primary",
+            },
+            quantity: { decimal: "25.5", unit: { kind: "custom", symbol: "NANO\u001b[31m" } },
+          },
+        ],
+        errors: [],
+      }),
+    } as any;
+    const ctx = createTestContext();
+
+    const first = await quotaStateA.fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    expect(first.entries[0]).toMatchObject({
+      name: "Known balance",
+      group: "Synthetic",
+      semantic: { metric: { name: "Known API" } },
+      quantity: { unit: { symbol: "NANO" } },
+    });
+    const key = quotaStateA.buildQuotaProviderStateCacheKey(provider.id, ctx);
+    const path = quotaStateA.getQuotaProviderStateCacheFilePath(provider.id, key);
+    expect(await (await import("fs/promises")).readFile(path, "utf8")).not.toContain("\u001b");
+
+    vi.resetModules();
+    const quotaStateB = await import("../src/lib/quota-state.js");
+    const second = await quotaStateB.fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    expect(second).toEqual(first);
+    expect(provider.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a live barValue row and does not cache it", async () => {
+    const { fetchQuotaProviderResult, readCachedProviderResult } = await import(
+      "../src/lib/quota-state.js"
+    );
     const provider = {
       id: "opencode",
       isAvailable: vi.fn(),
@@ -1152,8 +1509,7 @@ describe("quota-state shared cache", () => {
             name: "",
             group: "OpenCode Zen",
             percentRemaining: 94.25,
-            right: "Limit $100.00",
-            barValue: "¤ $42.50",
+            barValue: "USD 42.50",
           },
         ],
         errors: [],
@@ -1161,15 +1517,19 @@ describe("quota-state shared cache", () => {
     } as any;
     const ctx = createTestContext();
 
-    const result = await fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    const first = await fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    const second = await fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
 
-    expect(result.entries).toHaveLength(1);
-    expect(result.entries[0]).toMatchObject({
-      percentRemaining: 94.25,
-      right: "Limit $100.00",
-      barValue: "¤ $42.50",
+    expect(first).toEqual({
+      attempted: true,
+      entries: [],
+      errors: [{ label: "OpenCode Zen", message: "Invalid normalized provider result" }],
     });
-    expect(result.errors).toEqual([]);
+    expect(second).toEqual(first);
+    expect(provider.fetch).toHaveBeenCalledTimes(2);
+    await expect(readCachedProviderResult({ provider, ctx, ttlMs: 60_000 })).resolves.toEqual({
+      hit: false,
+    });
   });
 
   it("rejects cache v2 timestamps that are parseable but not ISO", async () => {

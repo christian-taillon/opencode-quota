@@ -16,7 +16,7 @@ import type {
   QuotaToastEntry,
   QuotaToastError,
 } from "./entries.js";
-import { isValueEntry } from "./entries.js";
+import { isPercentEntry, isValueEntry } from "./entries.js";
 import type { MaintainerAnnouncementsSummary } from "./maintainer-announcements.js";
 import {
   getPricingRefreshPolicy,
@@ -284,7 +284,7 @@ function formatCompactLiveProbeEntry(providerId: string, entry: QuotaToastEntry)
 
   if (isValueEntry(entry)) {
     parts.push(`value=${sanitizeSingleLineDisplayText(entry.value)}`);
-  } else {
+  } else if (isPercentEntry(entry)) {
     if (entry.right) {
       parts.push(sanitizeSingleLineDisplayText(entry.right));
     }

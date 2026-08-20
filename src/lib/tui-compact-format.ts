@@ -1,6 +1,6 @@
 import { sanitizeQuotaRenderData, sanitizeSingleLineDisplayText } from "./display-sanitize.js";
 import type { QuotaToastEntry, QuotaToastError } from "./entries.js";
-import { isValueEntry } from "./entries.js";
+import { isPercentEntry, isValueEntry } from "./entries.js";
 import { formatDisplayedPercentLabel } from "./format-utils.js";
 import { formatGroupedHeader } from "./grouped-header-format.js";
 import { extractSingleWindowWindowLabel } from "./quota-entry-display.js";
@@ -135,11 +135,10 @@ function formatCompactEntrySegments(params: {
       if (segment) pendingSegments.push({ kind: "value", segment });
       continue;
     }
+    if (!isPercentEntry(entry)) continue;
 
     const provider = getProviderName(entry);
-    const value =
-      compactText(entry.barValue ?? "") ||
-      formatCompactPercentLabel(entry.percentRemaining, params.percentDisplayMode);
+    const value = formatCompactPercentLabel(entry.percentRemaining, params.percentDisplayMode);
     const label = getWindowLabel(entry);
     const key = provider.toLowerCase();
     let group = groups.get(key);
