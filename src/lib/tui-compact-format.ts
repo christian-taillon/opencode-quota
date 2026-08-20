@@ -1,6 +1,12 @@
+import {
+  formatAccountingBasisDetails,
+  formatAccountingBoolean,
+  formatAccountingQuantity,
+  getAccountingEntryLabel,
+} from "./accounting-format.js";
 import { sanitizeQuotaRenderData, sanitizeSingleLineDisplayText } from "./display-sanitize.js";
 import type { QuotaToastEntry, QuotaToastError } from "./entries.js";
-import { isPercentEntry, isValueEntry } from "./entries.js";
+import { isBooleanEntry, isPercentEntry, isQuantityEntry, isValueEntry } from "./entries.js";
 import { formatDisplayedPercentLabel } from "./format-utils.js";
 import { formatGroupedHeader } from "./grouped-header-format.js";
 import { extractSingleWindowWindowLabel } from "./quota-entry-display.js";
@@ -103,7 +109,14 @@ type CompactPercentGroup = {
   windows: Array<{ label: string | null; value: string; isWindow: boolean }>;
 };
 
-type PendingCompactSegment = { kind: "percent"; key: string } | { kind: "value"; segment: string };
+type CompactCandidate = {
+  segment: string;
+  prominence: 0 | 1;
+  detail?: string;
+  atomic?: { prefix: string; value: string };
+};
+
+type PendingLegacySegment = { kind: "percent"; key: string } | { kind: "value"; segment: string };
 
 function formatCompactPercentGroupSegment(group: CompactPercentGroup): string | null {
   const windows = group.windows;
@@ -122,17 +135,79 @@ function formatCompactPercentGroupSegment(group: CompactPercentGroup): string | 
   return compactText(`${group.provider}${separator}${summary}`);
 }
 
-function formatCompactEntrySegments(params: {
+function getSemanticValue(
+  entry: QuotaToastEntry,
+  percentDisplayMode: QuotaToastConfig["percentDisplayMode"],
+): string | null {
+  if (isPercentEntry(entry)) {
+    return Number.isFinite(entry.percentRemaining)
+      ? formatCompactPercentLabel(entry.percentRemaining, percentDisplayMode)
+      : null;
+  }
+  if (isQuantityEntry(entry)) return formatAccountingQuantity(entry.quantity);
+  if (isBooleanEntry(entry)) return formatAccountingBoolean(entry.value);
+  if (isValueEntry(entry)) return compactText(entry.value);
+  return null;
+}
+
+function getCompactBasisDetail(
+  entry: QuotaToastEntry,
+  percentDisplayMode: QuotaToastConfig["percentDisplayMode"],
+): string | undefined {
+  if (!isPercentEntry(entry) || !entry.basis) return undefined;
+  const details = formatAccountingBasisDetails(entry.basis);
+  const prefix = percentDisplayMode === "used" ? "Used:" : "Remaining:";
+  return details.find((detail) => detail.startsWith(prefix));
+}
+
+function buildSemanticCandidate(
+  entry: QuotaToastEntry,
+  percentDisplayMode: QuotaToastConfig["percentDisplayMode"],
+  accountingDetail: QuotaToastConfig["accountingDetail"],
+): CompactCandidate | null {
+  if (!entry.semantic) return null;
+  const value = getSemanticValue(entry, percentDisplayMode);
+  if (!value) return null;
+
+  const provider = getProviderName(entry);
+  const label = compactText(getAccountingEntryLabel(entry));
+  const prefix = compactText([provider, label].filter(Boolean).join(": "));
+  const segment = compactText([prefix, value].filter(Boolean).join(" "));
+  if (!segment) return null;
+
+  return {
+    segment,
+    prominence: entry.semantic.prominence === "supplementary" ? 1 : 0,
+    ...(accountingDetail === "detailed"
+      ? { detail: getCompactBasisDetail(entry, percentDisplayMode) }
+      : {}),
+    ...(isQuantityEntry(entry) || isBooleanEntry(entry) ? { atomic: { prefix, value } } : {}),
+  };
+}
+
+function formatCompactEntryCandidates(params: {
   entries: QuotaRenderData["entries"];
   percentDisplayMode: QuotaToastConfig["percentDisplayMode"];
-}): string[] {
+  accountingDetail: QuotaToastConfig["accountingDetail"];
+}): CompactCandidate[] {
+  const semantic: CompactCandidate[] = [];
   const groups = new Map<string, CompactPercentGroup>();
-  const pendingSegments: PendingCompactSegment[] = [];
+  const pendingLegacy: PendingLegacySegment[] = [];
 
   for (const entry of params.entries) {
+    if (entry.semantic) {
+      const candidate = buildSemanticCandidate(
+        entry,
+        params.percentDisplayMode,
+        params.accountingDetail,
+      );
+      if (candidate) semantic.push(candidate);
+      continue;
+    }
+
     if (isValueEntry(entry)) {
       const segment = formatCompactValueEntrySegment(entry);
-      if (segment) pendingSegments.push({ kind: "value", segment });
+      if (segment) pendingLegacy.push({ kind: "value", segment });
       continue;
     }
     if (!isPercentEntry(entry)) continue;
@@ -146,7 +221,7 @@ function formatCompactEntrySegments(params: {
     if (!group) {
       group = { provider, windows: [] };
       groups.set(key, group);
-      pendingSegments.push({ kind: "percent", key });
+      pendingLegacy.push({ kind: "percent", key });
     }
 
     group.windows.push({
@@ -156,13 +231,80 @@ function formatCompactEntrySegments(params: {
     });
   }
 
-  return pendingSegments
+  const legacy = pendingLegacy
     .map((pending) =>
       pending.kind === "value"
         ? pending.segment
         : formatCompactPercentGroupSegment(groups.get(pending.key)!),
     )
-    .filter((segment): segment is string => Boolean(segment));
+    .filter((segment): segment is string => Boolean(segment))
+    .map((segment): CompactCandidate => ({ segment, prominence: 0 }));
+
+  return [...legacy, ...semantic]
+    .map((candidate, index) => ({ candidate, index }))
+    .sort(
+      (left, right) =>
+        left.candidate.prominence - right.candidate.prominence || left.index - right.index,
+    )
+    .map(({ candidate }) => candidate);
+}
+
+function fitAtomicCandidate(
+  atomic: NonNullable<CompactCandidate["atomic"]>,
+  maxWidth: number,
+): string | null {
+  if (atomic.value.length > maxWidth) return null;
+  const full = compactText(`${atomic.prefix} ${atomic.value}`);
+  if (full.length <= maxWidth) return full;
+
+  const prefixWidth = maxWidth - atomic.value.length - 1;
+  if (prefixWidth <= 0) return atomic.value;
+  const prefix = truncateSingleLine(atomic.prefix, prefixWidth);
+  return compactText(`${prefix} ${atomic.value}`);
+}
+
+function admitCompactCandidates(
+  candidates: CompactCandidate[],
+  maxWidth: number,
+): CompactCandidate[] {
+  const admitted: CompactCandidate[] = [];
+
+  for (const candidate of candidates) {
+    const separatorWidth = admitted.length > 0 ? COMPACT_SEGMENT_SEPARATOR.length : 0;
+    const usedWidth = admitted.reduce(
+      (total, item, index) =>
+        total + item.segment.length + (index > 0 ? COMPACT_SEGMENT_SEPARATOR.length : 0),
+      0,
+    );
+    const available = maxWidth - usedWidth - separatorWidth;
+    if (available <= 0) continue;
+
+    if (candidate.segment.length <= available) {
+      admitted.push({ ...candidate });
+      continue;
+    }
+
+    if (admitted.length > 0) continue;
+    if (candidate.atomic) {
+      const fitted = fitAtomicCandidate(candidate.atomic, available);
+      if (fitted) admitted.push({ ...candidate, segment: fitted });
+      continue;
+    }
+    const truncated = truncateSingleLine(candidate.segment, available);
+    if (truncated) admitted.push({ ...candidate, segment: truncated });
+  }
+
+  return admitted;
+}
+
+function admitBasisDetails(candidates: CompactCandidate[], maxWidth: number): void {
+  for (const candidate of candidates) {
+    if (!candidate.detail) continue;
+    const original = candidate.segment;
+    candidate.segment = `${original} (${candidate.detail})`;
+    const line = candidates.map((item) => item.segment).join(COMPACT_SEGMENT_SEPARATOR);
+    if (line.length > maxWidth) candidate.segment = original;
+  }
 }
 
 function formatCompactTokenCount(count: number): string {
@@ -214,6 +356,7 @@ function formatFirstErrorSegment(errors: QuotaToastError[]): string | null {
 export function buildCompactQuotaStatusLine(params: {
   data: QuotaRenderData;
   percentDisplayMode?: QuotaToastConfig["percentDisplayMode"];
+  accountingDetail?: QuotaToastConfig["accountingDetail"];
   maxWidth: number;
 }): string {
   const maxWidth = normalizeMaxWidth(params.maxWidth);
@@ -221,26 +364,37 @@ export function buildCompactQuotaStatusLine(params: {
 
   const data = sanitizeQuotaRenderData(params.data);
   const percentDisplayMode = params.percentDisplayMode ?? "remaining";
-  const segments = formatCompactEntrySegments({ entries: data.entries, percentDisplayMode });
-  const issues = data.errors.filter((error) => error.kind !== "intentional-filter");
-
+  const accountingDetail = params.accountingDetail ?? "summary";
+  const candidates = formatCompactEntryCandidates({
+    entries: data.entries,
+    percentDisplayMode,
+    accountingDetail,
+  });
   const sessionTokensSegment = formatCompactSessionTokensSegment(data);
   if (sessionTokensSegment) {
-    segments.push(sessionTokensSegment);
+    candidates.push({ segment: sessionTokensSegment, prominence: 0 });
   }
 
+  const admitted = admitCompactCandidates(candidates, maxWidth);
+
+  const issues = data.errors.filter((error) => error.kind !== "intentional-filter");
   if (issues.length > 0) {
-    if (segments.length === 0) {
+    if (admitted.length === 0) {
       const errorSegment = formatFirstErrorSegment(issues);
-      if (errorSegment) segments.push(errorSegment);
+      if (errorSegment) {
+        return truncateSingleLine(errorSegment, maxWidth);
+      }
     } else {
       const issueSegment = formatIssueCount(issues.length);
-      const candidate = [...segments, issueSegment].join(COMPACT_SEGMENT_SEPARATOR);
-      if (compactText(candidate).length <= maxWidth) {
-        segments.push(issueSegment);
+      const candidate = [...admitted.map((item) => item.segment), issueSegment].join(
+        COMPACT_SEGMENT_SEPARATOR,
+      );
+      if (candidate.length <= maxWidth) {
+        admitted.push({ segment: issueSegment, prominence: 0 });
       }
     }
   }
 
-  return truncateSingleLine(segments.join(COMPACT_SEGMENT_SEPARATOR), maxWidth);
+  if (accountingDetail === "detailed") admitBasisDetails(admitted, maxWidth);
+  return admitted.map((candidate) => candidate.segment).join(COMPACT_SEGMENT_SEPARATOR);
 }

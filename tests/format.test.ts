@@ -388,29 +388,65 @@ describe("formatQuotaRows", () => {
     expect(out).not.toContain("→ ");
   });
 
-  it("renders a single-segment label-less percent row right-aligned (grouped)", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-01-15T12:00:00.000Z"));
-
+  it("renders a structured quantity as an atomic value row without a bar", () => {
     const out = formatQuotaRows({
       version: "1.0.0",
       style: "allWindows",
       layout: { maxWidth: 50, narrowAt: 42, tinyAt: 32 },
       entries: [
         {
-          name: "",
+          kind: "quantity",
+          name: "zen-balance",
           group: "OpenCode Zen",
-          right: "Limit $100.00",
-          barValue: "¤ $42.50",
-          percentRemaining: 94,
+          accounting: {
+            resultType: "balance",
+            acquisitionMethod: "dashboard_scrape",
+            ownership: "maintained",
+            authority: "provider_reported",
+          },
+          semantic: {
+            metric: { kind: "component", component: "current_balance" },
+            prominence: "primary",
+          },
+          quantity: { decimal: "42.5", unit: { kind: "currency", code: "USD" } },
         },
       ],
     });
 
     expect(out).toContain("[OpenCode Zen]");
-    expect(out).toContain("Limit $100.00");
-    expect(out).toContain("¤ $42.50");
+    expect(out).toContain("Current balance");
+    expect(out).toContain("USD 42.50");
+    expect(out).not.toMatch(/[█░]/u);
     expect(out.split("\n").every((line) => line.length <= 50)).toBe(true);
+  });
+
+  it("keeps provider identity on structured classic value rows", () => {
+    const out = formatQuotaRows({
+      version: "1.0.0",
+      style: "singleWindow",
+      layout: { maxWidth: 50, narrowAt: 42, tinyAt: 32 },
+      entries: [
+        {
+          kind: "quantity",
+          name: "OpenCode Zen",
+          accounting: {
+            resultType: "balance",
+            acquisitionMethod: "dashboard_scrape",
+            ownership: "maintained",
+            authority: "provider_reported",
+          },
+          semantic: {
+            metric: { kind: "component", component: "current_balance" },
+            prominence: "primary",
+          },
+          quantity: { decimal: "42.5", unit: { kind: "currency", code: "USD" } },
+        },
+      ],
+    });
+
+    expect(out).toContain("OpenCode Zen Current balance");
+    expect(out).toContain("USD 42.50");
+    expect(out).not.toMatch(/[█░]/u);
   });
 
   it("justifies a two-segment label-less percent row to the edges (grouped)", () => {
@@ -426,7 +462,6 @@ describe("formatQuotaRows", () => {
           name: "",
           group: "OpenCode Zen",
           right: "Limit $100.00  Auto $20/5",
-          barValue: "¤ $42.50",
           percentRemaining: 94,
         },
       ],
@@ -439,24 +474,34 @@ describe("formatQuotaRows", () => {
     expect(lines.every((line) => line.length <= 50)).toBe(true);
   });
 
-  it("uses barValue instead of the percentage in tiny grouped output", () => {
+  it("renders a structured boolean in tiny grouped output without a bar", () => {
     const out = formatQuotaRows({
       version: "1.0.0",
       style: "allWindows",
       layout: { maxWidth: 32, narrowAt: 42, tinyAt: 32 },
       entries: [
         {
-          name: "",
+          kind: "boolean",
+          name: "zen-auto-reload",
           group: "OpenCode Zen",
-          right: "Limit $100.00  Auto $20/5",
-          barValue: "¤ $42.50",
-          percentRemaining: 94,
+          accounting: {
+            resultType: "status",
+            acquisitionMethod: "dashboard_scrape",
+            ownership: "maintained",
+            authority: "provider_reported",
+          },
+          semantic: {
+            metric: { kind: "component", component: "auto_reload" },
+            prominence: "primary",
+          },
+          value: true,
         },
       ],
     });
 
-    expect(out).toContain("¤ $42.50");
-    expect(out).not.toContain("94%");
+    expect(out).toContain("Auto-reload");
+    expect(out).toContain("Enabled");
+    expect(out).not.toMatch(/[█░]/u);
     expect(out.split("\n").every((line) => line.length <= 32)).toBe(true);
   });
 

@@ -1,6 +1,14 @@
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
+import {
+  formatAccountingBoolean,
+  formatAccountingQuantity,
+  getAccountingEntryLabel,
+} from "./accounting-format.js";
 import { type RuntimeContextRootHints, resolveRuntimeContextRoots } from "./config-file-utils.js";
-import { isPercentEntry } from "./entries.js";
+import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
+import { isBooleanEntry, isPercentEntry, isQuantityEntry, isValueEntry } from "./entries.js";
+import { formatDisplayedPercentLabel } from "./format-utils.js";
+import { formatGroupedHeader } from "./grouped-header-format.js";
 import {
   BUNDLED_MAINTAINER_ANNOUNCEMENTS,
   formatMaintainerAnnouncementHomeCountLine,
@@ -42,6 +50,7 @@ import { buildSidebarQuotaPanelLines, TUI_SIDEBAR_MAX_WIDTH } from "./tui-sideba
 import type { TuiCommandDisplay } from "./types.js";
 
 const COMPACT_UNAVAILABLE_TEXT = "Quota unavailable";
+const PROMPT_BAR_MAX_WIDTH = 50;
 const tuiQuotaClients = new WeakMap<TuiPluginApi, ReturnType<typeof makeTuiQuotaClient>>();
 
 export function getTuiRuntimeRootHints(api: TuiPluginApi): RuntimeContextRootHints {
@@ -297,6 +306,7 @@ function buildCompactStatusFromData(params: {
     ? buildCompactQuotaStatusLine({
         data,
         percentDisplayMode: params.runtime.config.percentDisplayMode,
+        accountingDetail: params.runtime.config.accountingDetail,
         maxWidth: params.maxWidth ?? params.runtime.config.tuiCompactStatus.maxWidth,
       })
     : "";
@@ -339,6 +349,7 @@ function buildSidebarPanelFromData(params: {
           buildCompactQuotaStatusLine({
             data: primaryData,
             percentDisplayMode: params.runtime.config.percentDisplayMode,
+            accountingDetail: params.runtime.config.accountingDetail,
             maxWidth: TUI_SIDEBAR_MAX_WIDTH,
           }),
         ].filter((line): line is string => Boolean(line))
@@ -369,14 +380,75 @@ function buildSidebarPanelFromData(params: {
   };
 }
 
-function pickPromptBarEntry(data: QuotaRenderData | null): PromptBarEntry | undefined {
+function fitPromptBarSemanticSegment(prefix: string, value: string): string | null {
+  const segment = sanitizeSingleLineDisplayText(`${prefix} ${value}`);
+  if (segment.length <= PROMPT_BAR_MAX_WIDTH) return segment;
+  if (value.length > PROMPT_BAR_MAX_WIDTH) return null;
+
+  const prefixWidth = PROMPT_BAR_MAX_WIDTH - value.length - 1;
+  if (prefixWidth <= 0) return value;
+  const visiblePrefix =
+    prefix.length <= prefixWidth
+      ? prefix
+      : prefixWidth === 1
+        ? "…"
+        : `${prefix.slice(0, prefixWidth - 1).trimEnd()}…`;
+  return sanitizeSingleLineDisplayText(`${visiblePrefix} ${value}`);
+}
+
+function buildSemanticPromptBarEntry(
+  entry: QuotaRenderData["entries"][number],
+  percentDisplayMode: QuotaRuntimeContext["config"]["percentDisplayMode"],
+): PromptBarEntry | undefined {
+  if (!entry.semantic || entry.semantic.prominence !== "primary") return undefined;
+
+  const value = isPercentEntry(entry)
+    ? Number.isFinite(entry.percentRemaining)
+      ? (formatDisplayedPercentLabel(entry.percentRemaining, percentDisplayMode).split(" ")[0] ??
+        "0%")
+      : null
+    : isQuantityEntry(entry)
+      ? formatAccountingQuantity(entry.quantity)
+      : isBooleanEntry(entry)
+        ? formatAccountingBoolean(entry.value)
+        : isValueEntry(entry)
+          ? entry.value
+          : null;
+  if (!value) return undefined;
+
+  const provider = entry.group?.trim()
+    ? formatGroupedHeader(entry.group).replace(/^\[([^\]]+)\]/u, "$1")
+    : entry.name.trim();
+  const label = getAccountingEntryLabel(entry);
+  const prefix = sanitizeSingleLineDisplayText(
+    provider && provider !== label ? `${provider}: ${label}` : label,
+  );
+  const semanticSegment = fitPromptBarSemanticSegment(prefix, value);
+  if (!semanticSegment) return undefined;
+
+  return {
+    semanticSegment,
+    ...(isPercentEntry(entry) ? { percentRemaining: entry.percentRemaining } : {}),
+    ...(entry.resetTimeIso ? { resetTimeIso: entry.resetTimeIso } : {}),
+  };
+}
+
+function pickPromptBarEntry(
+  data: QuotaRenderData | null,
+  percentDisplayMode: QuotaRuntimeContext["config"]["percentDisplayMode"],
+): PromptBarEntry | undefined {
   if (!data || !Array.isArray(data.entries)) {
     return undefined;
   }
 
+  for (const entry of data.entries) {
+    const semantic = buildSemanticPromptBarEntry(entry, percentDisplayMode);
+    if (semantic) return semantic;
+  }
+
   let fallback: PromptBarEntry | undefined;
   for (const entry of data.entries) {
-    if (!isPercentEntry(entry) || !Number.isFinite(entry.percentRemaining)) {
+    if (entry.semantic || !isPercentEntry(entry) || !Number.isFinite(entry.percentRemaining)) {
       continue;
     }
     const kind = classifyQuotaWindowText(entry.label ?? "") ?? classifyQuotaWindowText(entry.name);
@@ -406,7 +478,10 @@ function buildPromptBarFromData(params: {
     return { status: "loading" };
   }
 
-  const entry = pickPromptBarEntry(params.result.allWindowsData ?? params.result.data);
+  const entry = pickPromptBarEntry(
+    params.result.allWindowsData ?? params.result.data,
+    params.runtime.config.percentDisplayMode,
+  );
   return {
     status: "ready",
     ...(entry ? { entry } : {}),

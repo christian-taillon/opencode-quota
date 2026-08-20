@@ -515,7 +515,20 @@ function buildPromptBarParts(params: {
   if (!shouldRenderPromptBar(bar)) return undefined;
   const entry = bar.entry;
   if (!entry) return undefined;
+  const reset = entry.resetTimeIso
+    ? formatResetCountdown(entry.resetTimeIso, {
+        compactRounded: true,
+        decimals: bar.resetTimeDecimals,
+      })
+    : "";
+
+  const hasPercent = Number.isFinite(entry.percentRemaining);
+  if (entry.semanticSegment && !hasPercent) {
+    return { label: entry.semanticSegment, barText: "", meta: reset };
+  }
+
   const windowLabel =
+    entry.semanticSegment ??
     extractSingleWindowWindowLabel(entry.label ?? "") ??
     extractSingleWindowWindowLabel(entry.name ?? "") ??
     "Quota";
@@ -523,12 +536,6 @@ function buildPromptBarParts(params: {
     entry.percentRemaining ?? 0,
     bar.percentDisplayMode ?? "remaining",
   );
-  const reset = entry.resetTimeIso
-    ? formatResetCountdown(entry.resetTimeIso, {
-        compactRounded: true,
-        decimals: bar.resetTimeDecimals,
-      })
-    : "";
   const p = Math.max(0, Math.min(100, Math.round(entry.percentRemaining ?? 0)));
   const filled = Math.round((p / 100) * PROMPT_BAR_WIDTH);
   const empty = PROMPT_BAR_WIDTH - filled;
@@ -546,7 +553,9 @@ function buildPromptBarParts(params: {
   return {
     label: windowLabel,
     barText,
-    meta: [percent.replace(/\s+left$/u, ""), reset].filter(Boolean).join(" | "),
+    meta: entry.semanticSegment
+      ? reset
+      : [percent.replace(/\s+left$/u, ""), reset].filter(Boolean).join(" | "),
   };
 }
 

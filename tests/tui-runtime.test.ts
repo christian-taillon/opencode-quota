@@ -1306,6 +1306,7 @@ describe("tui runtime helpers", () => {
     expect(buildCompactQuotaStatusLine).toHaveBeenCalledWith({
       data,
       percentDisplayMode: "used",
+      accountingDetail: "summary",
       maxWidth: 42,
     });
   });
@@ -1473,6 +1474,88 @@ describe("tui runtime helpers", () => {
     });
   });
 
+  it.each([
+    {
+      sessionID: "prompt-bar-balance",
+      accounting: {
+        resultType: "balance",
+        acquisitionMethod: "remote_api",
+        ownership: "maintained",
+        authority: "provider_reported",
+      },
+      metric: { kind: "component", component: "current_balance" },
+      name: "account-balance",
+      group: "NanoGPT",
+      expected: "NanoGPT: Current balance USD 12.50",
+    },
+    {
+      sessionID: "prompt-bar-spend",
+      accounting: {
+        resultType: "spend",
+        acquisitionMethod: "local_runtime_accounting",
+        ownership: "maintained",
+        authority: "locally_derived",
+      },
+      metric: { kind: "named", name: "Known API" },
+      name: "known-api-spend",
+      group: "Cursor",
+      expected: "Cursor: Known API spend USD 12.50",
+    },
+  ] as const)("publishes a primary structured value for $sessionID", async (fixture) => {
+    writeFileSync(
+      join(worktreeDir, "opencode.json"),
+      JSON.stringify({
+        experimental: {
+          quotaToast: {
+            enabled: true,
+            accountingDetail: "detailed",
+            tuiSidebarPanel: { enabled: false },
+            tuiCompactStatus: { enabled: false },
+            tuiPromptBar: { enabled: true },
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    collectQuotaRenderData.mockResolvedValue({
+      active: [],
+      data: {
+        entries: [
+          {
+            kind: "quantity",
+            accounting: fixture.accounting,
+            name: fixture.name,
+            group: fixture.group,
+            semantic: { metric: fixture.metric, prominence: "primary" },
+            quantity: { decimal: "12.5", unit: { kind: "currency", code: "USD" } },
+          },
+        ],
+        errors: [],
+        sessionTokens: undefined,
+      },
+    });
+
+    const surfaces = await loadTuiSessionQuotaSurfaces({
+      api: {
+        state: {
+          provider: [],
+          path: { worktree: worktreeDir, directory: nestedDir },
+          session: { messages: () => [] },
+        },
+        client: {},
+      } as any,
+      sessionID: fixture.sessionID,
+    });
+
+    expect(surfaces.promptBar).toEqual({
+      status: "ready",
+      entry: { semanticSegment: fixture.expected },
+      percentDisplayMode: "remaining",
+      resetTimeDecimals: undefined,
+    });
+  });
+
   it("loads sidebar and compact session surfaces from one collection", async () => {
     writeFileSync(
       join(worktreeDir, "opencode.json"),
@@ -1569,6 +1652,7 @@ describe("tui runtime helpers", () => {
     expect(buildCompactQuotaStatusLine).toHaveBeenCalledWith({
       data,
       percentDisplayMode: "used",
+      accountingDetail: "summary",
       maxWidth: 42,
     });
   });
@@ -1724,6 +1808,7 @@ describe("tui runtime helpers", () => {
     expect(buildCompactQuotaStatusLine).toHaveBeenCalledWith({
       data,
       percentDisplayMode: "remaining",
+      accountingDetail: "summary",
       maxWidth: 96,
     });
   });
@@ -2101,6 +2186,7 @@ describe("tui runtime helpers", () => {
     expect(buildCompactQuotaStatusLine).toHaveBeenCalledWith({
       data,
       percentDisplayMode: "used",
+      accountingDetail: "summary",
       maxWidth: 40,
     });
     expect(buildSidebarQuotaPanelLines).not.toHaveBeenCalled();

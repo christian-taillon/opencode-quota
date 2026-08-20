@@ -1744,4 +1744,43 @@ describe("tui plugin smoke", () => {
       ref,
     });
   });
+
+  it("renders a structured prompt-bar value without percentage bar cells", async () => {
+    const plugin = await loadTuiModule();
+    const { api, registered } = createApi();
+
+    resolveTuiSurfaceRegistration.mockResolvedValueOnce({
+      commandDisplay: "inline",
+      sidebar: { enabled: false },
+      compact: {
+        enabled: false,
+        homeBottom: false,
+        sessionPrompt: false,
+        hasNativeProviderQuota: false,
+        suppressedByNativeProviderQuota: false,
+      },
+      promptBar: { enabled: true },
+      announcements: { homeBottom: false },
+      homeBottom: false,
+    });
+    loadTuiSessionQuotaSurfaces.mockResolvedValueOnce({
+      sidebar: { status: "disabled", lines: [] },
+      compact: { status: "disabled" },
+      promptBar: {
+        status: "ready",
+        entry: { semanticSegment: "Cursor: Known API spend USD 12.50" },
+        percentDisplayMode: "remaining",
+      },
+    });
+
+    await startTui(plugin, api);
+    const registration = registered.find((item) => item.order === 90)!;
+    registration.slots.session_prompt({}, { session_id: "session-rich" });
+    await flushPromises();
+    const rendered = registration.slots.session_prompt({}, { session_id: "session-rich" }) as any;
+    const hint = rendered.props.children[1];
+
+    expect(hint.props.children[0].props.children).toBe("Cursor: Known API spend USD 12.50");
+    expect(JSON.stringify(hint)).not.toMatch(/[█░▓▒]/u);
+  });
 });

@@ -7,8 +7,15 @@
  * - Includes session token summary (input/output per model)
  */
 
+import {
+  formatAccountingBasisDetails,
+  formatAccountingBasisSummary,
+  formatAccountingBoolean,
+  formatAccountingQuantity,
+  getAccountingEntryLabel,
+} from "./accounting-format.js";
 import type { QuotaToastEntry, QuotaToastError, SessionTokensData } from "./entries.js";
-import { isPercentEntry, isValueEntry } from "./entries.js";
+import { isBooleanEntry, isPercentEntry, isQuantityEntry, isValueEntry } from "./entries.js";
 import {
   bar,
   formatDisplayedPercentLabel,
@@ -27,7 +34,7 @@ import {
   renderPlainTextReport,
 } from "./report-document.js";
 import { SESSION_TOKEN_SECTION_HEADING } from "./session-tokens-format.js";
-import type { PercentDisplayMode } from "./types.js";
+import type { QuotaToastConfig } from "./types.js";
 
 /**
  * Format reset time in compact form (different from toast countdown).
@@ -72,6 +79,8 @@ function getCommandWindowLabel(entry: QuotaToastEntry): string | null {
 }
 
 function getCommandMetricLabel(entry: QuotaToastEntry): string {
+  if (entry.semantic) return getAccountingEntryLabel(entry);
+
   const window = getCommandWindowLabel(entry);
   const resultType = entry.accounting?.resultType;
 
@@ -108,24 +117,54 @@ function formatCommandDetails(entry: QuotaToastEntry, rightWidth: number): strin
   return "";
 }
 
+function getCommandValue(entry: QuotaToastEntry): string | null {
+  if (isValueEntry(entry)) return entry.value;
+  if (isQuantityEntry(entry)) return formatAccountingQuantity(entry.quantity);
+  if (isBooleanEntry(entry)) return formatAccountingBoolean(entry.value);
+  return null;
+}
+
+function getCommandBasisLines(
+  entry: QuotaToastEntry,
+  accountingDetail: QuotaToastConfig["accountingDetail"],
+  percentDisplayMode: QuotaToastConfig["percentDisplayMode"],
+): string[] {
+  if (!isPercentEntry(entry) || !entry.basis) return [];
+  const details =
+    accountingDetail === "detailed"
+      ? formatAccountingBasisDetails(entry.basis)
+      : [formatAccountingBasisSummary(entry.basis, percentDisplayMode)].filter(
+          (detail): detail is string => Boolean(detail),
+        );
+  return details.map((detail) => `    ${detail}`);
+}
+
 function buildQuotaCommandDocument(params: {
   entries: QuotaToastEntry[];
   errors: QuotaToastError[];
   sessionTokens?: SessionTokensData;
   generatedAtMs?: number;
-  percentDisplayMode?: PercentDisplayMode;
+  percentDisplayMode?: QuotaToastConfig["percentDisplayMode"];
+  accountingDetail?: QuotaToastConfig["accountingDetail"];
 }): ReportDocument {
   const groups = groupQuotaEntries(params.entries, "quota");
 
   const sections: ReportSection[] = groups.map((group, index) => {
     const lines: string[] = [];
     const rightWidth = Math.max(0, ...group.entries.map((row) => row.right?.trim().length ?? 0));
+    const labelWidth = Math.max(
+      QUOTA_COMMAND_LABEL_WIDTH,
+      ...group.entries
+        .filter((row) => Boolean(row.semantic))
+        .map((row) => getCommandMetricLabel(row).length),
+    );
     for (const row of group.entries) {
-      const label = padRight(getCommandMetricLabel(row), QUOTA_COMMAND_LABEL_WIDTH);
+      const label = padRight(getCommandMetricLabel(row), labelWidth);
       const details = formatCommandDetails(row, rightWidth);
 
-      if (isValueEntry(row)) {
-        lines.push(`  ${label}  ${row.value}${details}`);
+      const value = getCommandValue(row);
+      if (value !== null) {
+        lines.push(`  ${label}  ${value}${details}`);
         continue;
       }
 
@@ -137,6 +176,13 @@ function buildQuotaCommandDocument(params: {
       );
       lines.push(
         `  ${label}  ${bar(displayedPercent, QUOTA_COMMAND_BAR_WIDTH)}  ${padLeft(pctLabel, Math.max(9, pctLabel.length))}${details}`,
+      );
+      lines.push(
+        ...getCommandBasisLines(
+          row,
+          params.accountingDetail ?? "summary",
+          params.percentDisplayMode ?? "remaining",
+        ),
       );
     }
     return {
@@ -200,7 +246,8 @@ export function formatQuotaCommand(params: {
   errors: QuotaToastError[];
   sessionTokens?: SessionTokensData;
   generatedAtMs?: number;
-  percentDisplayMode?: PercentDisplayMode;
+  percentDisplayMode?: QuotaToastConfig["percentDisplayMode"];
+  accountingDetail?: QuotaToastConfig["accountingDetail"];
 }): string {
   return renderPlainTextReport(buildQuotaCommandDocument(params));
 }

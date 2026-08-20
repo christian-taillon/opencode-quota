@@ -336,6 +336,117 @@ describe("buildCompactQuotaStatusLine", () => {
     expect(line).toBe("Copilot 75%");
   });
 
+  it("renders structured quantities atomically with primary rows before supplementary rows", () => {
+    const baseAccounting = {
+      acquisitionMethod: "remote_api",
+      ownership: "maintained",
+      authority: "provider_reported",
+    } as const;
+    const line = buildCompactQuotaStatusLine({
+      accountingDetail: "detailed",
+      maxWidth: 96,
+      data: {
+        entries: [
+          {
+            kind: "quantity",
+            name: "gift",
+            group: "MiMo",
+            accounting: { ...baseAccounting, resultType: "balance" },
+            semantic: {
+              metric: { kind: "component", component: "gift_balance" },
+              prominence: "supplementary",
+            },
+            quantity: { decimal: "8.25", unit: { kind: "currency", code: "CNY" } },
+          },
+          {
+            kind: "quantity",
+            name: "known-spend",
+            group: "Cursor",
+            accounting: { ...baseAccounting, resultType: "spend" },
+            semantic: {
+              metric: { kind: "named", name: "Known API" },
+              prominence: "primary",
+            },
+            quantity: { decimal: "12.5", unit: { kind: "currency", code: "USD" } },
+          },
+        ],
+        errors: [],
+      },
+    });
+
+    expect(line).toContain("Cursor: Known API spend USD 12.50");
+    expect(line).toContain("MiMo: Gift balance CNY 8.25");
+    expect(line.indexOf("Cursor")).toBeLessThan(line.indexOf("MiMo"));
+  });
+
+  it("keeps a structured financial value whole when compact width shortens its label", () => {
+    const line = buildCompactQuotaStatusLine({
+      maxWidth: 22,
+      data: {
+        entries: [
+          {
+            kind: "quantity",
+            name: "balance",
+            group: "A very long provider",
+            accounting: {
+              resultType: "balance",
+              acquisitionMethod: "remote_api",
+              ownership: "maintained",
+              authority: "provider_reported",
+            },
+            semantic: {
+              metric: { kind: "component", component: "current_balance" },
+              prominence: "primary",
+            },
+            quantity: { decimal: "12.5", unit: { kind: "currency", code: "USD" } },
+          },
+        ],
+        errors: [],
+      },
+    });
+
+    expect(line.length).toBeLessThanOrEqual(22);
+    expect(line).toContain("USD 12.50");
+    expect(line).not.toContain("USD 1…");
+  });
+
+  it("admits detailed basis only as a complete compact fact", () => {
+    const entry = {
+      name: "monthly-budget",
+      group: "Zen",
+      accounting: {
+        resultType: "budget",
+        acquisitionMethod: "dashboard_scrape",
+        ownership: "maintained",
+        authority: "locally_derived",
+      },
+      semantic: {
+        metric: { kind: "window", window: "month" },
+        prominence: "primary",
+      },
+      percentRemaining: 94.25,
+      basis: {
+        remaining: {
+          quantity: { decimal: "94.25", unit: { kind: "currency", code: "USD" } },
+          authority: "locally_derived",
+        },
+      },
+    } as const;
+    const narrow = buildCompactQuotaStatusLine({
+      accountingDetail: "detailed",
+      maxWidth: 30,
+      data: { entries: [entry], errors: [] },
+    });
+    const wide = buildCompactQuotaStatusLine({
+      accountingDetail: "detailed",
+      maxWidth: 80,
+      data: { entries: [entry], errors: [] },
+    });
+
+    expect(narrow).not.toContain("Remaining:");
+    expect(wide).toContain("(Remaining: USD 94.25)");
+  });
+
   it("collapses whitespace, sanitizes control text, and truncates with ellipsis", () => {
     const line = buildCompactQuotaStatusLine({
       percentDisplayMode: "remaining",

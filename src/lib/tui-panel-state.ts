@@ -25,6 +25,8 @@ export type HomeBottomState =
   | { status: "ready"; announcementText?: string; compact: CompactStatusState };
 
 export type PromptBarEntry = {
+  /** Preformatted primary semantic label/value segment for rich accounting rows. */
+  semanticSegment?: string;
   label?: string;
   name?: string;
   percentRemaining?: number;

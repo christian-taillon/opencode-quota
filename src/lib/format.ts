@@ -2,8 +2,15 @@
  * Formatting helpers for quota toast output
  */
 
+import {
+  formatAccountingBasisDetails,
+  formatAccountingBasisSummary,
+  formatAccountingBoolean,
+  formatAccountingQuantity,
+  getAccountingEntryLabel,
+} from "./accounting-format.js";
 import type { QuotaToastEntry, QuotaToastError, SessionTokensData } from "./entries.js";
-import { isPercentEntry, isValueEntry } from "./entries.js";
+import { isBooleanEntry, isPercentEntry, isQuantityEntry, isValueEntry } from "./entries.js";
 import {
   bar,
   DISPLAYED_PERCENT_LABEL_WIDTH,
@@ -99,6 +106,7 @@ export function formatQuotaRows(params: {
   errors?: QuotaToastError[];
   style?: QuotaFormatStyle;
   percentDisplayMode?: QuotaToastConfig["percentDisplayMode"];
+  accountingDetail?: QuotaToastConfig["accountingDetail"];
   resetTimeDecimals?: number;
   sessionTokens?: SessionTokensData;
 }): string {
@@ -110,6 +118,7 @@ export function formatQuotaRows(params: {
       entries: params.entries,
       errors: params.errors,
       percentDisplayMode: params.percentDisplayMode,
+      accountingDetail: params.accountingDetail,
       resetTimeDecimals: params.resetTimeDecimals,
       sessionTokens: params.sessionTokens,
     });
@@ -136,14 +145,14 @@ export function formatQuotaRows(params: {
       ),
   );
 
-  const barValueCol = percentCol;
+  const percentValueCol = percentCol;
   const timeCol = isTiny ? 6 : isNarrow ? 7 : 7;
 
   // Bar width: use most of maxWidth, leaving room for separator + suffix on line 2.
   // Line 1 (name + time) can use full maxWidth so labels are not cut before the
   // sidebar width is exhausted.
-  // Line 2 (bar + suffix) spans barWidth + separator + barValueCol.
-  const barWidth = Math.max(10, maxWidth - separator.length - barValueCol);
+  // Line 2 (bar + suffix) spans barWidth + separator + percentValueCol.
+  const barWidth = Math.max(10, maxWidth - separator.length - percentValueCol);
 
   const lines: string[] = [];
 
@@ -155,7 +164,7 @@ export function formatQuotaRows(params: {
   ) => {
     const displayedPercent = resolveDisplayedPercent(remaining, params.percentDisplayMode);
     const percentLabel = formatDisplayedPercentLabel(remaining, params.percentDisplayMode);
-    const visibleBarSuffix = percentLabel.slice(0, barValueCol);
+    const visibleBarSuffix = percentLabel.slice(0, percentValueCol);
     const summary = rightSummary?.trim() || "";
     const leftText = summary ? `${name} ${summary}` : name;
 
@@ -177,12 +186,12 @@ export function formatQuotaRows(params: {
         : timeCol;
       const tinyNameCol = Math.max(
         1,
-        maxWidth - separator.length - timeWidth - separator.length - barValueCol,
+        maxWidth - separator.length - timeWidth - separator.length - percentValueCol,
       );
       const line = [
         padRight(leftText, tinyNameCol),
         padLeft(timeStr, timeWidth),
-        padLeft(visibleBarSuffix, barValueCol),
+        padLeft(visibleBarSuffix, percentValueCol),
       ].join(separator);
       lines.push(line.slice(0, maxWidth));
       return;
@@ -200,19 +209,45 @@ export function formatQuotaRows(params: {
       }),
     );
 
-    // Line 2: bar + percent (or a custom barValue when provided)
+    // Line 2: bar + displayed percentage
     const barCell = bar(displayedPercent, barWidth);
-    const suffixCell = padLeft(visibleBarSuffix, barValueCol);
+    const suffixCell = padLeft(visibleBarSuffix, percentValueCol);
     const barLine = [barCell, suffixCell].join(separator);
     lines.push(barLine);
   };
 
-  const addValueEntry = (name: string, resetIso: string | undefined, value: string) => {
-    const timeStr = formatResetCountdown(resetIso, {
-      missing: "-",
-      compactRounded: true,
-      decimals: params.resetTimeDecimals,
-    });
+  const addValueEntry = (
+    name: string,
+    resetIso: string | undefined,
+    value: string,
+    atomicValue = false,
+  ) => {
+    const timeStr =
+      atomicValue && !resetIso
+        ? ""
+        : formatResetCountdown(resetIso, {
+            missing: "-",
+            compactRounded: true,
+            decimals: params.resetTimeDecimals,
+          });
+
+    if (atomicValue) {
+      const suffix = [value, timeStr].filter(Boolean).join(separator);
+      if (suffix.length > maxWidth) {
+        if (value.length <= maxWidth) lines.push(padLeft(value, maxWidth));
+        return;
+      }
+      const availableNameWidth = maxWidth - (suffix ? separator.length + suffix.length : 0);
+      if (availableNameWidth <= 0) {
+        lines.push(padLeft(suffix, maxWidth));
+        return;
+      }
+      const visibleName = name.slice(0, availableNameWidth).trimEnd();
+      lines.push(
+        `${padRight(visibleName, availableNameWidth)}${suffix ? `${separator}${suffix}` : ""}`,
+      );
+      return;
+    }
 
     if (isTiny) {
       // Tiny: single line without percent; keep time col alignment.
@@ -244,16 +279,42 @@ export function formatQuotaRows(params: {
     );
   };
 
+  const addBasisLine = (entry: QuotaToastEntry) => {
+    if (isTiny || !isPercentEntry(entry) || !entry.basis) return;
+    const detail = params.accountingDetail ?? "summary";
+    const candidates =
+      detail === "detailed"
+        ? formatAccountingBasisDetails(entry.basis)
+        : [
+            formatAccountingBasisSummary(entry.basis, params.percentDisplayMode ?? "remaining"),
+          ].filter((value): value is string => Boolean(value));
+    let line = "";
+    for (const candidate of candidates) {
+      const next = line ? `${line} | ${candidate}` : candidate;
+      if (next.length > maxWidth) break;
+      line = next;
+    }
+    if (line) lines.push(line);
+  };
+
   for (const entry of params.entries ?? []) {
+    const semanticLabel = entry.semantic ? getAccountingEntryLabel(entry) : "";
+    const name = entry.semantic
+      ? [entry.name.trim(), semanticLabel]
+          .filter((part, index, parts) => Boolean(part) && parts.indexOf(part) === index)
+          .join(" ")
+      : isPercentEntry(entry)
+        ? buildSingleWindowPercentEntryDisplayName(entry)
+        : entry.name;
     if (isValueEntry(entry)) {
-      addValueEntry(entry.name, entry.resetTimeIso, entry.value);
+      addValueEntry(name, entry.resetTimeIso, entry.value);
+    } else if (isQuantityEntry(entry)) {
+      addValueEntry(name, entry.resetTimeIso, formatAccountingQuantity(entry.quantity), true);
+    } else if (isBooleanEntry(entry)) {
+      addValueEntry(name, entry.resetTimeIso, formatAccountingBoolean(entry.value), true);
     } else if (isPercentEntry(entry)) {
-      addPercentEntry(
-        buildSingleWindowPercentEntryDisplayName(entry),
-        entry.resetTimeIso,
-        entry.percentRemaining,
-        entry.right,
-      );
+      addPercentEntry(name, entry.resetTimeIso, entry.percentRemaining, entry.right);
+      addBasisLine(entry);
     }
   }
 

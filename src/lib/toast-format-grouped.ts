@@ -5,8 +5,15 @@
  * Designed to feel like a status dashboard while still respecting OpenCode toast width.
  */
 
+import {
+  formatAccountingBasisDetails,
+  formatAccountingBasisSummary,
+  formatAccountingBoolean,
+  formatAccountingQuantity,
+  getAccountingEntryLabel,
+} from "./accounting-format.js";
 import type { QuotaToastEntry, QuotaToastError, SessionTokensData } from "./entries.js";
-import { isPercentEntry, isValueEntry } from "./entries.js";
+import { isBooleanEntry, isPercentEntry, isQuantityEntry, isValueEntry } from "./entries.js";
 import {
   bar,
   DISPLAYED_PERCENT_LABEL_WIDTH,
@@ -45,6 +52,8 @@ function extractWindowLabel(text: string): string | null {
 }
 
 function resolveGroupedRowLabel(entry: QuotaToastEntry): string {
+  if (entry.semantic) return getAccountingEntryLabel(entry);
+
   const rawLabel = normalizeLabelText(entry.label);
   const fromLabel = extractWindowLabel(rawLabel);
   if (fromLabel) return fromLabel;
@@ -70,6 +79,7 @@ export function formatQuotaRowsGrouped(params: {
   entries?: QuotaToastEntry[];
   errors?: QuotaToastError[];
   percentDisplayMode?: QuotaToastConfig["percentDisplayMode"];
+  accountingDetail?: QuotaToastConfig["accountingDetail"];
   resetTimeDecimals?: number;
   sessionTokens?: SessionTokensData;
 }): string {
@@ -88,8 +98,8 @@ export function formatQuotaRowsGrouped(params: {
           formatDisplayedPercentLabel(entry.percentRemaining, params.percentDisplayMode).length,
       ),
   );
-  const barValueCol = percentCol;
-  const barWidth = Math.max(10, maxWidth - separator.length - barValueCol);
+  const percentValueCol = percentCol;
+  const barWidth = Math.max(10, maxWidth - separator.length - percentValueCol);
   const timeCol = isTiny ? 6 : isNarrow ? 7 : 7;
 
   const lines: string[] = [];
@@ -116,13 +126,42 @@ export function formatQuotaRowsGrouped(params: {
     for (const entry of list) {
       const right = entry.right ? entry.right.trim() : "";
 
-      if (isValueEntry(entry)) {
-        const label = entry.label?.trim() || entry.name;
-        const timeStr = formatResetCountdown(entry.resetTimeIso, {
-          compactRounded: true,
-          decimals: params.resetTimeDecimals,
-        });
-        const value = entry.value.trim();
+      const structuredValue = isQuantityEntry(entry)
+        ? formatAccountingQuantity(entry.quantity)
+        : isBooleanEntry(entry)
+          ? formatAccountingBoolean(entry.value)
+          : null;
+      if (isValueEntry(entry) || structuredValue !== null) {
+        const isAtomicValue = structuredValue !== null;
+        const label = entry.semantic
+          ? getAccountingEntryLabel(entry)
+          : entry.label?.trim() || entry.name;
+        const timeStr = entry.resetTimeIso
+          ? formatResetCountdown(entry.resetTimeIso, {
+              compactRounded: true,
+              decimals: params.resetTimeDecimals,
+            })
+          : "";
+        const value = isValueEntry(entry) ? entry.value.trim() : structuredValue;
+        if (value === null) continue;
+
+        if (isAtomicValue) {
+          const suffix = [value, timeStr].filter(Boolean).join(separator);
+          if (suffix.length > maxWidth) {
+            if (value.length <= maxWidth) lines.push(padLeft(value, maxWidth));
+            continue;
+          }
+          const availableLabelWidth = maxWidth - (suffix ? separator.length + suffix.length : 0);
+          if (availableLabelWidth <= 0) {
+            lines.push(padLeft(suffix, maxWidth));
+            continue;
+          }
+          const leftText = label.slice(0, availableLabelWidth).trimEnd();
+          lines.push(
+            `${padRight(leftText, availableLabelWidth)}${suffix ? `${separator}${suffix}` : ""}`,
+          );
+          continue;
+        }
 
         if (isTiny) {
           // Tiny: "label  time  value"
@@ -197,28 +236,28 @@ export function formatQuotaRowsGrouped(params: {
         const timeWidth = isResetTimeDecimals(params.resetTimeDecimals)
           ? Math.max(timeCol, timeStr.length)
           : timeCol;
-        const visibleBarSuffix = percentLabel.slice(0, barValueCol);
+        const visibleBarSuffix = percentLabel.slice(0, percentValueCol);
         if (isValueRow) {
           const tinyNameCol = Math.max(
             1,
-            maxWidth - separator.length - timeWidth - separator.length - barValueCol,
+            maxWidth - separator.length - timeWidth - separator.length - percentValueCol,
           );
           const line = [
             padRight(entry.right!.trim(), tinyNameCol),
             padLeft(timeStr, timeWidth),
-            padLeft(visibleBarSuffix, barValueCol),
+            padLeft(visibleBarSuffix, percentValueCol),
           ].join(separator);
           lines.push(line.slice(0, maxWidth));
           continue;
         }
         const tinyNameCol = Math.max(
           1,
-          maxWidth - separator.length - timeWidth - separator.length - barValueCol,
+          maxWidth - separator.length - timeWidth - separator.length - percentValueCol,
         );
         const line = [
           padRight(label, tinyNameCol),
           padLeft(timeStr, timeWidth),
-          padLeft(visibleBarSuffix, barValueCol),
+          padLeft(visibleBarSuffix, percentValueCol),
         ].join(separator);
         lines.push(line.slice(0, maxWidth));
         continue;
@@ -249,8 +288,24 @@ export function formatQuotaRowsGrouped(params: {
 
       // Line 2: bar + percent
       const barCell = bar(displayedPercent, barWidth);
-      const suffixCell = padLeft(percentLabel.slice(0, barValueCol), barValueCol);
+      const suffixCell = padLeft(percentLabel.slice(0, percentValueCol), percentValueCol);
       lines.push([barCell, suffixCell].join(separator));
+
+      if (entry.basis) {
+        const candidates =
+          (params.accountingDetail ?? "summary") === "detailed"
+            ? formatAccountingBasisDetails(entry.basis)
+            : [
+                formatAccountingBasisSummary(entry.basis, params.percentDisplayMode ?? "remaining"),
+              ].filter((value): value is string => Boolean(value));
+        let detailLine = "";
+        for (const candidate of candidates) {
+          const next = detailLine ? `${detailLine} | ${candidate}` : candidate;
+          if (next.length > maxWidth) break;
+          detailLine = next;
+        }
+        if (detailLine) lines.push(detailLine);
+      }
     }
   }
 
