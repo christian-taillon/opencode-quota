@@ -39,6 +39,12 @@ describe("example provider", () => {
     expectAttemptedWithNoErrors(out);
     expect(out.entries).toEqual([
       {
+        accounting: {
+          resultType: "quota",
+          acquisitionMethod: "remote_api",
+          ownership: "maintained",
+          authority: "provider_reported",
+        },
         name: "Example Provider",
         percentRemaining: 75,
         resetTimeIso: "2026-01-02T00:00:00.000Z",

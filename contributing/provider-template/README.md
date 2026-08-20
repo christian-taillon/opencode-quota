@@ -49,4 +49,16 @@ Before coding, replace these placeholders everywhere:
 
 Use `Existing OpenCode auth, global config, or env` only after tests prove all three paths work. Do not leave copied template tests skipped, todo-only, or unresolved. If one path is missing, use provider-specific wording instead.
 
-In provider ledgers, use `Data from` rather than `Source`. These are friendly labels, not exact internal result types: use `Quota` as the umbrella for quota and rate-limit windows, join other multiple results with `and`, and use `Quota and usage` in that order. Keep exact internal `resultType` values in code and v4 JSON/export documentation.
+In provider ledgers, use `Data from` rather than `Source`. These are friendly labels, not exact internal result types: use `Quota` as the umbrella for quota and rate-limit windows, join other multiple results with `and`, and use `Quota and usage` in that order. Keep exact internal `resultType` values in code and JSON/export documentation.
+
+## Accounting row rule
+
+The copied `provider.ts` intentionally demonstrates a simple percentage-only row. Keep that shape when the provider only has a percentage, but preserve the required `AccountingMetadata` and make `resultType`, acquisition, ownership, and authority match the real source.
+
+If the provider exposes richer accounting facts, follow `CONTRIBUTING.md` instead of formatting them into the simple example:
+
+- Numeric money/count data becomes a typed quantity or percentage basis fact; booleans become typed boolean rows.
+- Every rich row has a complete semantic metric and explicit `primary` or `supplementary` prominence.
+- Basis `used`, `limit`, and `remaining` values keep their literal meanings and individual authorities.
+- Named metrics contain no values, units, reset text, or layout punctuation.
+- Do not use financial `right` strings or `barValue`; shared formatting owns labels and values.

@@ -77,7 +77,7 @@ Recommended settings for `main`:
 ## Repo Guardrails
 
 - Never invoke an LLM/model API to compute toast/report output. Everything must remain local and deterministic.
-- Monetary values must use the actual currency symbol or ISO code, never decorative or generic currency glyphs.
+- Rich accounting currency quantities must preserve the provider's uppercase ISO code and render through the shared formatter (for example, `USD 12.50`), never a provider-formatted currency string, bare symbol, decorative glyph, conversion, or cross-currency sum.
 - The server plugin is the sole owner of deterministic slash commands for TUI and Desktop/server. It registers each `cfg.command` once, injects exactly one ignored/no-reply output message with `session.prompt({ noReply: true, ignored: true })`, and must throw `handled()` so OpenCode does not continue into `prompt(...)`.
 - The TUI plugin owns only Sidebar, Compact status, home-bottom, prompt-wrapper, refresh, and resource-lifecycle surfaces. It must not register keymap commands or render native slash-command dialogs.
 - Slash commands (`/quota`, `/quota_status`, `/quota_announcements`, `/pricing_refresh`, `/tokens_*`) must route through `buildQuotaDialogCommandOutput()`; do not duplicate command-output logic in `src/plugin.ts`.
@@ -119,6 +119,20 @@ Keep README setup wording tied to real behavior.
 - Add tests for every supported auth source; do not leave copied template tests skipped, todo-only, or unresolved.
 - Use the current README setup label—`Automatic`, `Needs setup`, or `Existing setups only`—that matches the real user workflow.
 - In the PR checklist, state whether you started from the provider template; if not, explain why it does not apply.
+
+### Accounting Result Contract
+
+Every provider row must carry `AccountingMetadata`. Its closed `resultType` is the actual accounting meaning—`quota`, `rate_limit`, `usage`, `spend`, `budget`, `balance`, or `status`—not the shape that is easiest to render. Row-level and basis-fact authorities must also name the real origin. `user_configured` is allowed only on a basis fact, such as a configured budget limit; it is not a row-level JSON v2 authority.
+
+For a rich provider:
+
+- Emit numeric financial/count facts as typed `quantity` rows or percentage `basis` facts, and booleans as typed `boolean` rows. Do not preformat currency in a legacy `value` or financial `right` string.
+- Provide a complete `semantic` object with an explicit `primary` or `supplementary` prominence. Do not infer prominence from order.
+- Keep basis `used`, `limit`, and `remaining` values literal. A display mode may change the percentage direction but never rename one fact as another.
+- Keep named metrics short and single-line. A named label contains the concept only—never a value, unit, reset string, or layout punctuation.
+- Use the shared accounting formatter for human output and JSON v2 flattening. `barValue` is removed and is not an extension point.
+
+A simple percentage-only provider can keep the legacy percent row shape without `semantic` or `basis`; it still needs accurate `AccountingMetadata`. Do not add structured semantics unless the source can support their meaning and authority.
 
 ## Quality Bar for Fixes
 

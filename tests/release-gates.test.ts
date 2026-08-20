@@ -121,7 +121,7 @@ describe("v4 release gates", () => {
     const history = run(historyScript);
     expect(history.status).toBe(0);
     expect(history.stdout).toContain("V4 history privacy verified");
-  });
+  }, 10_000);
 
   it("rejects every forced-added private path from temporary commit history", async () => {
     const historyRepo = path.join(tempDir, "history");

@@ -95,7 +95,15 @@ These vendors offer team or business plans, but the current integrations report 
 
 </details>
 
-The friendly `Quota` label covers quota and rate-limit windows; v4 JSON distinguishes them.
+The friendly `Quota` label covers quota and rate-limit windows; JSON distinguishes them.
+
+### Rich accounting rows
+
+OpenCode Zen, NanoGPT, Xiaomi MiMo, Kilo Gateway, DeepSeek, and Cursor use provider-neutral accounting rows. Quota, rate limit, budget, usage, spend, remaining credits, and account balance stay separate: a balance is not remaining allowance, and spend is not a budget percentage.
+
+Root `accountingDetail` defaults to `"summary"`. Set it to `"detailed"` to admit supplementary balance/status/spend rows and fuller percentage basis where the surface has room. `formatStyle` still controls window selection, while `percentDisplayMode` controls used-versus-remaining percentage direction. Narrow and compact surfaces may omit lower-priority detail.
+
+Structured currency rows use explicit uppercase codes such as `USD 12.50` or `CNY 8.25`. OpenCode Quota does not convert, combine, or choose a preferred currency.
 
 xAI reads OpenCode's existing xAI OAuth login and reports its single Weekly quota window. The credits endpoint remains authoritative for quota; a best-effort subscriptions lookup labels recognized plans as xAI Lite, xAI SuperGrok, or xAI Heavy. If subscription metadata is unavailable or unrecognized, the quota remains visible under the xAI SuperGrok label.
 
@@ -391,6 +399,8 @@ Use companion plugin [`@playwo/opencode-cursor-oauth`](https://github.com/PoolPi
 opencode auth login --provider cursor
 ```
 
+Cursor estimates the current local billing cycle from OpenCode history. With complete model coverage and a positive configured/preset allowance, it shows an **API budget** percentage with used, limit, and remaining USD facts. If any Cursor model is unknown, it shows only **Known API spend** plus a partial-data issue; it never presents that partial spend as total account spend or a percentage. Without an allowance it shows **API spend**. **Auto+Composer spend** is supplementary and appears in detailed output when space allows.
+
 <a id="qwen-code"></a>
 
 ### Qwen Code
@@ -461,7 +471,7 @@ If you use manual provider selection, include `google-gemini-cli` in `enabledPro
 
 ### DeepSeek
 
-DeepSeek shows the current on-demand account balance from `GET https://api.deepseek.com/user/balance`.
+DeepSeek reads the current on-demand account balance from `GET https://api.deepseek.com/user/balance`. Summary shows each valid provider-reported **Total balance** as its own currency row. Detailed output can also show **Granted balance** and **Topped-up balance** for that currency. Currencies are never summed or converted. If no valid total balance exists, the provider shows the API's availability state instead; malformed individual decimals produce a partial-data issue rather than becoming zero.
 
 Use one of these trusted API-key sources:
 
@@ -483,13 +493,19 @@ Or put the key in trusted user/global OpenCode config, not repo-local config:
 
 If you use manual provider selection, include `deepseek` in `enabledProviders`.
 
+<a id="nanogpt"></a>
+
+### NanoGPT
+
+NanoGPT reports provider-supplied **Daily quota** and **Monthly quota** percentages with available used, limit, and remaining request facts. Its current balance is a separate primary row: USD is used when available, otherwise a valid NANO balance is shown. USD and NANO are never combined. Subscription and balance requests can succeed independently, so valid rows remain visible with a partial-data issue when another endpoint fails.
+
 <a id="kilo-gateway"></a>
 
 ### Kilo Gateway
 
-Kilo Gateway checks the authenticated `kiloPass.getState` tRPC endpoint first. Kilo Pass subscribers see the percentage and dollar amount left, plus the next billing or renewal time when Kilo provides one. Base, usage, bonus, remaining, overage, and reset values stay available in `/quota_status`, raw diagnostics, and JSON exports instead of the everyday quota display.
+Kilo Gateway checks the authenticated `kiloPass.getState` tRPC endpoint first. An active pass with positive total credits shows one **Credits** percentage with used, limit, and remaining USD facts plus the provider reset when available; it does not add a duplicate remaining-credits row. A zero-credit active pass shows one **Remaining credits** USD value and preserves the reset.
 
-If the account has no active Kilo Pass, OpenCode Quota falls back to Kilo's documented personal Gateway balance. This balance-only path does not invent usage, quota percentages, or reset times.
+If the account has no active Kilo Pass, OpenCode Quota falls back to one provider-reported **Total balance** USD row. This balance-only path does not invent usage, quota percentages, or reset times. Base, usage, bonus, remaining, overage, and reset source values stay available in `/quota_status` and curated JSON `rawDetails`.
 
 Create a Kilo Gateway API key in your personal profile, then set:
 
@@ -509,7 +525,7 @@ Project-local `opencode.json` and `opencode.jsonc` files are not read for this s
 
 ### Xiaomi MiMo
 
-Xiaomi MiMo reads the signed-in dashboard API for one provider-reported **Monthly** token-plan quota plus optional **Total**, **Cash**, and **Gift** balances.
+Xiaomi MiMo reads the signed-in dashboard API for one provider-reported **Monthly quota** with used/limit token facts plus optional **Total balance**, **Cash balance**, and **Gift balance** rows. Total balance is primary; cash and gift are supplementary and appear in detailed output when space allows. A valid provider currency code is preserved. When the provider supplies no currency, amounts are credits rather than an invented currency.
 
 Use exactly one trusted credential source. The environment variable has priority:
 
@@ -591,14 +607,6 @@ Find both values in your browser: the workspace ID is in the billing-page URL, a
 > the `OPENCODE_WORKSPACE_ID` / `OPENCODE_AUTH_COOKIE` environment variables,
 > which collide with the OpenCode client's workspace feature.
 
-Set `opencodeMonthlyLimit` in `opencode-quota/quota-toast.json` to override the monthly budget from the billing page. Without a monthly limit, the provider shows the current balance only.
+Set `opencodeMonthlyLimit` in `opencode-quota/quota-toast.json` to override the monthly budget from the billing page. With valid monthly usage and a positive page/configured limit, Zen shows a primary **Monthly budget** percentage with used, limit, and locally derived remaining USD facts. The current account balance is separate and supplementary; without a valid budget percentage, that balance becomes the primary row. **Auto-reload** is a supplementary enabled/disabled row. Its raw amount and trigger remain diagnostics because their monetary units are not confirmed.
 
-Set `opencodeZenDisplay` to `"detailed"` to show the configured monthly limit and auto-reload summary (right-aligned above the bar) and to replace the percent label with the current balance. When unset (or `"default"`), the provider keeps the existing bar + percent behavior:
-
-```json
-{
-  "opencodeZenDisplay": "detailed"
-}
-```
-
-The detailed mode also reads the Zen auto-reload fields (reload, reloadAmount, reloadTrigger) from the billing page and shows them as `Auto <amount>/<trigger>` (e.g. `Auto $20/5`) next to the limit.
+Use root `accountingDetail: "detailed"` to admit the supplementary balance and auto-reload rows. The removed `opencodeZenDisplay` key is diagnostic-only: old `default` or `detailed` values are not translated and `/quota_status` reports a nonfatal migration issue until the key is removed.

@@ -123,7 +123,7 @@ If the host has no global metrics provider, nothing is sent and OpenCode Quota c
 <details>
 <summary><strong>Metric fields and privacy</strong></summary>
 
-`opencode.quota.consumed` uses percentage rows only. Its value is `(100 - percentRemaining) / 100`, limited to the range `0` to `1`. Value rows such as balances are not converted into this metric.
+`opencode.quota.consumed` uses percentage rows only. Its value is `(100 - percentRemaining) / 100`, limited to the range `0` to `1`. Quantity, boolean, legacy value, percentage-basis, and supplementary metadata do not create consumed gauges.
 
 | Metric | Labels |
 | --- | --- |
@@ -187,7 +187,9 @@ Provider statuses:
 | `error` | The provider failed |
 | `unavailable` | No matching cached data exists |
 
-A percentage entry uses `renderType: "percent"` and `percentRemaining`. A value entry uses `renderType: "value"` and `value`.
+A percentage entry uses `renderType: "percent"` and `percentRemaining`. A value entry uses `renderType: "value"` and `value`. Internally typed quantities flatten into formatted value strings (for example, `USD 12.50`), and booleans flatten to `Enabled` or `Disabled`.
+
+Version 2 does not expose internal semantic metrics, primary/supplementary prominence, used/limit/remaining basis facts, or per-fact authority. The export uses the complete cached provider snapshot, so `accountingDetail`, `formatStyle`, and `percentDisplayMode` do not change machine output and supplementary rows can add more value entries. Scripts must not assume the first row is a percentage or that one provider produces only one row; select `renderType`, `resultType`, and any other required fields explicitly. Threshold checks consider percentage rows only.
 
 Optional entry fields include `window`, `resetAt`, `observedAt`, and `sourceId`. A provider can also include `rawDetails`: sanitized provider-owned key/value facts that stay out of normal quota displays.
 

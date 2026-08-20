@@ -24,6 +24,7 @@ Strict `.json` files also work. Run `/quota_status` if you are unsure which file
 | Show every reset period                    | `formatStyle: "allWindows"`   |
 | Show one quota window per provider         | `formatStyle: "singleWindow"` |
 | Show quota used instead of left            | `percentDisplayMode: "used"`  |
+| Show supplementary accounting facts        | `accountingDetail: "detailed"` |
 | Show slash results with messages           | `tuiCommandDisplay: "inline"` |
 | Show slash results in a TUI popup          | `tuiCommandDisplay: "dialog"` |
 | Turn the TUI sidebar on or off             | `tuiSidebarPanel.enabled`     |
@@ -46,6 +47,7 @@ The installer chooses `allWindows` by default. If the setting is absent, the bui
   // Show every quota reset period as percentage remaining.
   "formatStyle": "allWindows",
   "percentDisplayMode": "remaining",
+  "accountingDetail": "summary",
 
   // Keep TUI slash-command results with normal messages.
   "tuiCommandDisplay": "inline",
@@ -61,6 +63,17 @@ The installer chooses `allWindows` by default. If the setting is absent, the bui
 ```
 
 Restart OpenCode after changing the file.
+
+### Show accounting detail
+
+`accountingDetail` is a root setting with two values:
+
+- `"summary"` (default) keeps primary accounting rows and shows at most one supporting basis expression per percentage row.
+- `"detailed"` also admits supplementary rows and, on wide output, can show separate `Used`, `Limit`, and `Remaining` facts.
+
+It applies to human output from `/quota`, terminal `show`, popup toasts, the TUI sidebar, Compact status, and the prompt bar below the input. Narrow, tiny, 36-column sidebar, and compact layouts can omit basis or supplementary detail rather than truncate a financial value. The prompt bar always keeps one primary row and omits supplementary rows and basis details.
+
+This setting is independent of `formatStyle`, which selects quota windows, and `percentDisplayMode`, which selects used or remaining percentage direction. Those display settings do not change provider input or cache identity. Changing only `accountingDetail` reprojects an available snapshot immediately; later collection still follows normal cache expiry, disabled-cache, and refresh rules. The words `Used`, `Limit`, and `Remaining` always keep their literal meanings in either percentage mode.
 
 ### Notify when quota becomes available again
 
@@ -331,7 +344,8 @@ Existing `experimental.quotaToast` settings remain supported. Quota settings do 
 | `minIntervalMs`               | `300000`       | Minimum fetch interval between provider updates.                                                                                                                                                                                                                                                                    |
 | `requestTimeoutMs`            | `5000`         | Remote provider request timeout in milliseconds.                                                                                                                                                                                                                                                                    |
 | `formatStyle`                 | `singleWindow` | Shared quota reset-period display for TUI popup toasts, the Sidebar panel, and Compact status line unless a TUI surface override is set: `singleWindow` shows one reset period per provider; `allWindows` shows all reset periods per provider. Legacy `classic`/`grouped` aliases are still accepted.              |
-| `percentDisplayMode`          | `remaining`    | Shared quota percentage meaning for TUI popup toasts, the Sidebar panel, and `/quota`: `remaining` shows quota left; `used` shows quota consumed.                                                                                                                                                                   |
+| `percentDisplayMode`          | `remaining`    | Percentage/bar direction across human surfaces: `remaining` shows the percentage left; `used` shows the percentage consumed. It does not rename literal basis facts.                                                                                                                                               |
+| `accountingDetail`            | `summary`      | Provider-neutral accounting detail across human surfaces: `summary` keeps primary rows; `detailed` also admits supplementary rows and fuller basis detail when width allows. Independent of `formatStyle` and `percentDisplayMode`.                                                                                |
 | `resetTimeDecimals`           | unset          | Decimal places for compact reset countdowns in popup toasts, the Sidebar panel, and terminal `show`. Accepts integers `0`–`4`; unset preserves the default integer-day and half-hour-step display.                                                                                                                  |
 | `onlyCurrentModel`            | `false`        | Filter quota rows to the current model/provider when that session selection can be resolved.                                                                                                                                                                                                                        |
 | `showSessionTokens`           | `true`         | Show the `Session input/output tokens` section when session token data is available. When cached input is present, the section keeps the legacy `in/out` layout and appends cached input in parentheses next to the input amount.                                                                                   |
@@ -359,7 +373,7 @@ Existing `experimental.quotaToast` settings remain supported. Quota settings do 
 | Option                                             | Default              | Meaning                                                                                                                                                                                                       |
 | -------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `tuiCommandDisplay`                                | `"inline"`           | Choose where deterministic native TUI command output appears. `inline` adds an ignored/no-reply plain-text message to the active transcript and uses a dialog on Home; `dialog` always opens the local popup. |
-| `tuiSidebarPanel.enabled`                          | `true`               | Show the Sidebar `Quota` panel when the TUI plugin is installed. Click the panel header to toggle between compact summary and detailed all-windows views; OpenCode remembers the last state.                  |
+| `tuiSidebarPanel.enabled`                          | `true`               | Show the Sidebar `Quota` panel when the TUI plugin is installed. Click the panel header to toggle its collapsed/expanded window layout; OpenCode remembers the last state. This is not an `accountingDetail` override. |
 | `tuiSidebarPanel.formatStyle`                      | (root `formatStyle`) | Override `formatStyle` for the Sidebar panel only. Useful when you want `allWindows` detail in the sidebar but a different style elsewhere.                                                                   |
 | `tuiCompactStatus.enabled`                         | `false`              | Opt in to Compact status line UI surfaces.                                                                                                                                                                    |
 | `tuiCompactStatus.homeBottom`                      | `true`               | Show the Compact status line at the home bottom location.                                                                                                                                                     |
@@ -367,7 +381,7 @@ Existing `experimental.quotaToast` settings remain supported. Quota settings do 
 | `tuiCompactStatus.suppressWhenNativeProviderQuota` | `true`               | Hide the Compact status line when OpenCode exposes native provider-quota support.                                                                                                                             |
 | `tuiCompactStatus.maxWidth`                        | `96`                 | Maximum Compact status line text width.                                                                                                                                                                       |
 | `tuiCompactStatus.formatStyle`                     | (root `formatStyle`) | Override `formatStyle` for the Compact status line only. Useful when you want `singleWindow` on the compact line while the sidebar shows `allWindows`.                                                        |
-| `tuiPromptBar.enabled`                             | `false`              | Show an opt-in quota progress bar below the TUI prompt. It prefers the 5h window and replaces the Compact line below the session input. Sidebar, Home, toasts, and slash-command output are unchanged. |
+| `tuiPromptBar.enabled`                             | `false`              | Show one opt-in primary quota/accounting result below the TUI prompt and replace the Compact line there. Rich results use the first projected primary row; legacy-only results keep the existing 5h percentage preference. Basis and supplementary rows are omitted. |
 
 ### Maintainer announcement settings
 
@@ -384,7 +398,6 @@ Existing `experimental.quotaToast` settings remain supported. Quota settings do 
 | `googleModels`               | `["CLAUDE"]`                       | Google model keys to query: `CLAUDE`, `G3PRO`, `G3FLASH`, `G3IMAGE`, `GPTOSS`.                       |
 | `opencodeGoWindows`          | `["rolling", "weekly", "monthly"]` | Display filter for validated OpenCode Go API results: 5h, Weekly, and Monthly.                         |
 | `opencodeMonthlyLimit`       | unset                              | Override the OpenCode Zen monthly budget in USD.                                                     |
-| `opencodeZenDisplay`           | unset                              | OpenCode Zen display: `default` keeps the percentage; `detailed` shows the limit, auto-reload summary, and current balance. |
 | `cursorPlan`                 | `"none"`                           | Cursor included API budget preset: `none`, `pro`, `pro-plus`, `ultra`.                               |
 | `cursorIncludedApiUsd`       | unset                              | Override Cursor monthly included API budget in USD.                                                  |
 | `cursorBillingCycleStartDay` | unset                              | Local billing-cycle anchor day `1..28`; when unset, Cursor usage resets on the local calendar month. |
@@ -396,6 +409,8 @@ Ollama Cloud has no `quota-toast.json` credential setting. Use `OLLAMA_API_KEY`,
 OpenCode Go has no `quota-toast.json` workspace ID, cookie, endpoint, credential, or token setting. It automatically uses `OPENCODE_API_KEY`, trusted user/global `provider.opencode.options.apiKey`, or a strict `opencode-go` API-key entry in OpenCode `auth.json`, with legacy `opencode` supported only as a fallback. `opencodeGoWindows` only filters the 5h, Weekly, and Monthly rows returned by the official usage API. See [OpenCode Go setup](providers.md#opencode-go).
 
 Xiaomi MiMo has no `quota-toast.json` credential or endpoint setting. Use `MIMO_USAGE_COOKIE` or trusted user/global `opencode-quota/mimo.json`; see [Xiaomi MiMo setup](providers.md#xiaomi-mimo).
+
+**Removed Zen setting:** `opencodeZenDisplay` is no longer supported. If a file-backed, SDK, or legacy config source still contains it, `/quota_status` reports a nonfatal migration issue. Its old `default` and `detailed` values are not translated. Remove the key and set root `accountingDetail` explicitly when you want `"detailed"` output.
 
 ### Export settings
 

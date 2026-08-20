@@ -89,7 +89,7 @@ More ways to use it:
 - Tune reset countdown precision without changing the default compact display
 - Get a popup when quota becomes available again for the windows you choose via [`resetNotifications`](docs/readme/configuration.md#notify-when-quota-becomes-available-again)
 - Add a quota bar below the TUI prompt via [`tuiPromptBar.enabled`](docs/readme/configuration.md#tui-settings)
-- Choose default or detailed OpenCode Zen billing output with [`opencodeZenDisplay`](docs/readme/configuration.md#provider-specific-settings)
+- Choose summary or detailed provider-neutral accounting with [`accountingDetail`](docs/readme/configuration.md#show-accounting-detail)
 - Choose current-session or descendant-tree token totals across `/quota`, toasts, the sidebar, and the compact input line
 - Diagnose authentication, quota sources, pricing, and maintainer notices
 
@@ -211,7 +211,13 @@ These vendors offer team or business plans, but the current integrations report 
 
 </details>
 
-The quota view uses short labels such as `Day quota`, `5h quota`, `Day budget`, and `Balance`. Bar width varies by surface. JSON keeps the precise accounting type for scripts.
+### Accounting display
+
+Quota, rate limit, budget, usage, spend, remaining credits, and account balance keep distinct meanings. Percentage bars apply only to percentage rows; an account balance is never treated as remaining budget.
+
+For OpenCode Zen, NanoGPT, Xiaomi MiMo, Kilo Gateway, DeepSeek, and Cursor, `accountingDetail` defaults to `"summary"`. Summary keeps primary rows; `"detailed"` also admits supplementary rows and fuller used/limit/remaining facts. Narrow, tiny, sidebar, and compact layouts may omit lower-priority detail to stay within their width; the prompt bar keeps one primary result.
+
+`accountingDetail` is independent of `formatStyle` (which chooses quota windows) and `percentDisplayMode` (which chooses used or remaining percentage direction). Rich currency rows show explicit codes such as `USD 12.50` or `CNY 8.25`; currencies are never converted or combined. JSON remains schema version 2 and keeps the exact accounting `resultType` for scripts.
 
 ### Custom providers
 
