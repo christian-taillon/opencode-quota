@@ -981,6 +981,60 @@ describe("buildQuotaStatusReport", () => {
     expect(report).toContain("- reset_at: 2026-07-01T00:00:00.000Z");
   });
 
+  it("formats semantic quantity and boolean live probe rows with shared accounting text", async () => {
+    const report = await buildProviderStatusReport("deepseek", {
+      providerLiveProbes: [
+        makeProviderSuccessProbe(
+          "deepseek",
+          {},
+          {
+            entries: [
+              {
+                kind: "quantity",
+                accounting: {
+                  resultType: "balance",
+                  acquisitionMethod: "remote_api",
+                  ownership: "maintained",
+                  authority: "provider_reported",
+                },
+                name: "internal-total-name",
+                group: "DeepSeek",
+                semantic: {
+                  metric: { kind: "component", component: "total_balance" },
+                  prominence: "primary",
+                },
+                quantity: { decimal: "12.345", unit: { kind: "currency", code: "USD" } },
+              },
+              {
+                kind: "boolean",
+                accounting: {
+                  resultType: "status",
+                  acquisitionMethod: "remote_api",
+                  ownership: "maintained",
+                  authority: "provider_reported",
+                },
+                name: "internal-availability-name",
+                group: "DeepSeek",
+                semantic: {
+                  metric: { kind: "named", name: "Availability" },
+                  prominence: "primary",
+                },
+                value: false,
+              },
+            ],
+            errors: [],
+          },
+        ),
+      ],
+    });
+
+    const section = getReportSection(report, "deepseek:");
+    expect(section).toContain("- live_entry_1: Total balance value=USD 12.35");
+    expect(section).toContain("- live_entry_2: Availability value=Low balance");
+    expect(section).not.toContain("internal-total-name");
+    expect(section).not.toContain("internal-availability-name");
+  });
+
   it("reports DeepSeek API key diagnostics", async () => {
     const report = await buildProviderStatusReport("deepseek", {
       providerLiveProbes: [

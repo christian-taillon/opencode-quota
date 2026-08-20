@@ -89,7 +89,7 @@ function buildDeepSeekResult(result: DeepSeekBalanceSuccess): QuotaProviderResul
     }
   }
 
-  if (!hasTotalBalance) {
+  if (!hasTotalBalance && result.isAvailable !== undefined) {
     entries.push({
       kind: "boolean",
       accounting: STATUS_ACCOUNTING,

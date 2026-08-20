@@ -691,6 +691,20 @@ describe("simple API-key provider queries", () => {
       });
     });
 
+    it.each([
+      ["missing", {}],
+      ["malformed", { is_available: "false" }],
+    ])("preserves %s availability as undefined", async (_case, payload) => {
+      stubJsonFetch(payload);
+
+      await expect(queryDeepSeekBalance()).resolves.toEqual({
+        success: true,
+        isAvailable: undefined,
+        balanceInfos: [],
+        parseIssues: [],
+      });
+    });
+
     it("filters unsupported currencies and preserves CNY balances", async () => {
       stubJsonFetch({
         is_available: false,

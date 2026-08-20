@@ -184,6 +184,50 @@ describe("deepseek provider", () => {
     expect(out.entries[0]?.accounting.resultType).toBe("status");
   });
 
+  it("keeps valid sibling rows and diagnostics without inventing availability", async () => {
+    const { queryDeepSeekBalance } = await import("../src/lib/deepseek.js");
+    (queryDeepSeekBalance as any).mockResolvedValueOnce({
+      success: true,
+      isAvailable: undefined,
+      balanceInfos: [{ currency: "USD", grantedBalance: "1.25" }],
+      parseIssues: [{ currency: "USD", field: "total_balance" }],
+    });
+
+    const out = await deepseekProvider.fetch({ config: {} } as any);
+
+    expect(out.attempted).toBe(true);
+    expect(visibleEntries(out.entries, "deepseek")).toEqual([
+      {
+        kind: "quantity",
+        name: "deepseek-usd-granted-balance",
+        group: "DeepSeek",
+        semantic: {
+          metric: { kind: "component", component: "granted_balance" },
+          prominence: "supplementary",
+        },
+        quantity: { decimal: "1.25", unit: { kind: "currency", code: "USD" } },
+      },
+    ]);
+    expect(out.entries.some((entry) => entry.kind === "boolean")).toBe(false);
+    expect(out.errors).toEqual([
+      { label: "DeepSeek USD", message: "total_balance returned an invalid decimal" },
+    ]);
+  });
+
+  it("returns no data when an empty response omits availability", async () => {
+    const { queryDeepSeekBalance } = await import("../src/lib/deepseek.js");
+    (queryDeepSeekBalance as any).mockResolvedValueOnce({
+      success: true,
+      isAvailable: undefined,
+      balanceInfos: [],
+      parseIssues: [],
+    });
+
+    const out = await deepseekProvider.fetch({ config: {} } as any);
+
+    expect(out).toMatchObject({ attempted: true, entries: [], errors: [] });
+  });
+
   it("maps errors into toast errors", async () => {
     const { queryDeepSeekBalance } = await import("../src/lib/deepseek.js");
     (queryDeepSeekBalance as any).mockResolvedValueOnce({

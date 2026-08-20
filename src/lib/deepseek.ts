@@ -27,7 +27,7 @@ export interface DeepSeekBalanceParseIssue {
 }
 
 export interface DeepSeekBalanceResult {
-  isAvailable: boolean;
+  isAvailable: boolean | undefined;
   balanceInfos: DeepSeekBalanceInfo[];
   parseIssues: DeepSeekBalanceParseIssue[];
 }
@@ -35,7 +35,7 @@ export interface DeepSeekBalanceResult {
 export type DeepSeekResult =
   | {
       success: true;
-      isAvailable: boolean;
+      isAvailable: boolean | undefined;
       balanceInfos: DeepSeekBalanceInfo[];
       parseIssues: DeepSeekBalanceParseIssue[];
     }
@@ -63,7 +63,7 @@ function parseDeepSeekBalance(payload: unknown): DeepSeekBalanceResult {
     throw new Error("DeepSeek balance response returned an unexpected response shape");
   }
 
-  const isAvailable = typeof payload.is_available === "boolean" ? payload.is_available : false;
+  const isAvailable = typeof payload.is_available === "boolean" ? payload.is_available : undefined;
   const balanceInfos: DeepSeekBalanceInfo[] = [];
   const parseIssues: DeepSeekBalanceParseIssue[] = [];
   const rawInfos = payload.balance_infos;

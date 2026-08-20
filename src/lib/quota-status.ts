@@ -1,6 +1,11 @@
 import { stat } from "fs/promises";
 import { getProviders } from "../providers/registry.js";
 import {
+  formatAccountingBoolean,
+  formatAccountingQuantity,
+  formatAccountingSemanticLabel,
+} from "./accounting-format.js";
+import {
   type LoadConfigIssue,
   QUOTA_TOAST_SETTING_SOURCE_KEYS,
   type QuotaToastSettingSources,
@@ -16,7 +21,7 @@ import type {
   QuotaToastEntry,
   QuotaToastError,
 } from "./entries.js";
-import { isPercentEntry, isValueEntry } from "./entries.js";
+import { isBooleanEntry, isPercentEntry, isQuantityEntry, isValueEntry } from "./entries.js";
 import type { MaintainerAnnouncementsSummary } from "./maintainer-announcements.js";
 import {
   getPricingRefreshPolicy,
@@ -263,6 +268,16 @@ function getCompactLiveProbeDescriptor(
   providerId: string,
   entry: QuotaToastEntry,
 ): string | undefined {
+  if (entry.semantic) {
+    return sanitizeSingleLineDisplayText(
+      formatAccountingSemanticLabel(
+        entry.accounting.resultType,
+        entry.semantic,
+        entry.kind ?? "percent",
+      ),
+    );
+  }
+
   const candidates = [entry.label, entry.name, entry.group];
   for (const candidate of candidates) {
     if (typeof candidate !== "string") continue;
@@ -282,7 +297,11 @@ function formatCompactLiveProbeEntry(providerId: string, entry: QuotaToastEntry)
     parts.push(descriptor);
   }
 
-  if (isValueEntry(entry)) {
+  if (isQuantityEntry(entry)) {
+    parts.push(`value=${formatAccountingQuantity(entry.quantity)}`);
+  } else if (isBooleanEntry(entry)) {
+    parts.push(`value=${formatAccountingBoolean(entry.value, entry.semantic)}`);
+  } else if (isValueEntry(entry)) {
     parts.push(`value=${sanitizeSingleLineDisplayText(entry.value)}`);
   } else if (isPercentEntry(entry)) {
     if (entry.right) {
