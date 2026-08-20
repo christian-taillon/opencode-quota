@@ -211,14 +211,6 @@ These vendors offer team or business plans, but the current integrations report 
 
 </details>
 
-### Accounting display
-
-Quota, rate limit, budget, usage, spend, remaining credits, and account balance keep distinct meanings. Percentage bars apply only to percentage rows; an account balance is never treated as remaining budget.
-
-For OpenCode Zen, NanoGPT, Xiaomi MiMo, Kilo Gateway, DeepSeek, and Cursor, `accountingDetail` defaults to `"summary"`. Summary keeps primary rows; `"detailed"` also admits supplementary rows and fuller used/limit/remaining facts. Narrow, tiny, sidebar, and compact layouts may omit lower-priority detail to stay within their width; the prompt bar keeps one primary result.
-
-`accountingDetail` is independent of `formatStyle` (which chooses quota windows) and `percentDisplayMode` (which chooses used or remaining percentage direction). Rich currency rows show explicit codes such as `USD 12.50` or `CNY 8.25`; currencies are never converted or combined. JSON remains schema version 2 and keeps the exact accounting `resultType` for scripts.
-
 ### Custom providers
 
 Add a provider that uses a remote quota API or tracks a local usage estimate:
