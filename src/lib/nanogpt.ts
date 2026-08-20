@@ -6,15 +6,11 @@
  * - https://nano-gpt.com/api/check-balance
  */
 
+import { isCanonicalAccountingDecimal } from "./accounting-format.js";
 import { sanitizeDisplaySnippet, sanitizeDisplayText } from "./display-sanitize.js";
-import { clampPercent, fmtUsdAmount } from "./format-utils.js";
+import { clampPercent } from "./format-utils.js";
 import { fetchWithTimeout } from "./http.js";
-import {
-  getNanoGptKeyDiagnostics,
-  hasNanoGptApiKey,
-  type NanoGptKeySource,
-  resolveNanoGptApiKey,
-} from "./nanogpt-config.js";
+import { resolveNanoGptApiKey } from "./nanogpt-config.js";
 import type { QuotaError } from "./types.js";
 
 type NanoGptRecord = Record<string, unknown>;
@@ -27,6 +23,11 @@ export type NanoGptUsageWindow = {
   remaining: number;
   percentRemaining: number;
   resetTimeIso?: string;
+  reportedBasis: {
+    used?: number;
+    limit?: number;
+    remaining?: number;
+  };
 };
 
 export interface NanoGptSubscription {
@@ -40,7 +41,6 @@ export interface NanoGptSubscription {
 }
 
 export interface NanoGptBalance {
-  usdBalance?: number;
   usdBalanceRaw?: string;
   nanoBalanceRaw?: string;
 }
@@ -153,6 +153,11 @@ function normalizeUsageWindow(
     remaining: Math.max(0, safeRemaining),
     percentRemaining,
     resetTimeIso: getIsoFromEpochMs(value.resetAt) ?? fallbackResetTimeIso,
+    reportedBasis: {
+      ...(used !== undefined && used >= 0 ? { used } : {}),
+      ...(limitFromResponse !== undefined ? { limit: limitFromResponse } : {}),
+      ...(remainingRaw !== undefined && remainingRaw >= 0 ? { remaining: remainingRaw } : {}),
+    },
   };
 }
 
@@ -187,25 +192,42 @@ function parseNanoGptUsage(payload: unknown): NanoGptSubscription {
   };
 }
 
-function parseNanoGptBalance(payload: unknown): NanoGptBalance {
+function parseNanoGptBalance(payload: unknown): {
+  balance: NanoGptBalance;
+  fieldErrors: string[];
+} {
   if (!isRecord(payload)) {
     throw new Error("NanoGPT balance response returned an unexpected response shape");
   }
 
   const data = payload as NanoGptBalanceResponse;
-  const usdBalanceRaw = getNonEmptyString(data.usd_balance);
-  const nanoBalanceRaw = getNonEmptyString(data.nano_balance);
-  const usdParsed = usdBalanceRaw !== undefined ? Number.parseFloat(usdBalanceRaw) : NaN;
+  const fields = [
+    ["usd_balance", data.usd_balance],
+    ["nano_balance", data.nano_balance],
+  ] as const;
+  const balance: NanoGptBalance = {};
+  const fieldErrors: string[] = [];
+  let presentFieldCount = 0;
 
-  if (usdBalanceRaw === undefined && nanoBalanceRaw === undefined) {
-    throw new Error("NanoGPT balance response returned an unexpected response shape");
+  for (const [name, value] of fields) {
+    if (value === undefined) continue;
+    presentFieldCount++;
+    if (typeof value !== "string" || !isCanonicalAccountingDecimal(value)) {
+      fieldErrors.push(`NanoGPT balance response returned an invalid ${name} decimal`);
+      continue;
+    }
+    if (name === "usd_balance") balance.usdBalanceRaw = value;
+    else balance.nanoBalanceRaw = value;
   }
 
-  return {
-    usdBalance: Number.isFinite(usdParsed) ? usdParsed : undefined,
-    usdBalanceRaw,
-    nanoBalanceRaw,
-  };
+  if (presentFieldCount === 0) {
+    throw new Error("NanoGPT balance response returned an unexpected response shape");
+  }
+  if (!balance.usdBalanceRaw && !balance.nanoBalanceRaw) {
+    throw new Error(fieldErrors.join("; "));
+  }
+
+  return { balance, fieldErrors };
 }
 
 async function fetchNanoGptUsage(
@@ -247,7 +269,10 @@ async function fetchNanoGptUsage(
 async function fetchNanoGptBalance(
   headers: Record<string, string>,
   requestTimeoutMs?: number,
-): Promise<{ success: true; balance: NanoGptBalance } | { success: false; message: string }> {
+): Promise<
+  | { success: true; balance: NanoGptBalance; fieldErrors: string[] }
+  | { success: false; message: string }
+> {
   try {
     return await fetchWithTimeout(NANOGPT_BALANCE_URL, {
       request: {
@@ -266,7 +291,7 @@ async function fetchNanoGptBalance(
 
         return {
           success: true as const,
-          balance: parseNanoGptBalance(await response.json()),
+          ...parseNanoGptBalance(await response.json()),
         };
       },
     });
@@ -283,21 +308,6 @@ export {
   hasNanoGptApiKey as hasNanoGptApiKeyConfigured,
   type NanoGptKeySource,
 } from "./nanogpt-config.js";
-
-export function formatNanoGptBalanceValue(balance: {
-  usdBalance?: number;
-  nanoBalanceRaw?: string;
-}): string | null {
-  if (typeof balance.usdBalance === "number" && Number.isFinite(balance.usdBalance)) {
-    return fmtUsdAmount(balance.usdBalance);
-  }
-
-  if (balance.nanoBalanceRaw) {
-    return `${balance.nanoBalanceRaw} NANO`;
-  }
-
-  return null;
-}
 
 export async function queryNanoGptQuota(
   options: { requestTimeoutMs?: number } = {},
@@ -321,6 +331,8 @@ export async function queryNanoGptQuota(
   }
   if (!balanceResult.success) {
     endpointErrors.push({ endpoint: "balance", message: balanceResult.message });
+  } else if (balanceResult.fieldErrors.length > 0) {
+    endpointErrors.push({ endpoint: "balance", message: balanceResult.fieldErrors.join("; ") });
   }
 
   if (!usageResult.success && !balanceResult.success) {

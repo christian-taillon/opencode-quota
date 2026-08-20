@@ -16,12 +16,6 @@ vi.mock("../src/lib/nanogpt.js", () => ({
     checkedPaths: [],
     authPaths: [],
   })),
-  formatNanoGptBalanceValue: vi.fn((balance: { usdBalance?: number; nanoBalanceRaw?: string }) => {
-    if (typeof balance.usdBalance === "number") {
-      return `$${balance.usdBalance.toFixed(2)}`;
-    }
-    return balance.nanoBalanceRaw ? `${balance.nanoBalanceRaw} NANO` : null;
-  }),
 }));
 
 describe("nanogpt provider", () => {
@@ -47,6 +41,7 @@ describe("nanogpt provider", () => {
           remaining: 4995,
           percentRemaining: 100,
           resetTimeIso: "2026-01-02T00:00:00.000Z",
+          reportedBasis: { used: 5, limit: 5000, remaining: 4995 },
         },
         monthly: {
           used: 50,
@@ -54,10 +49,12 @@ describe("nanogpt provider", () => {
           remaining: 59950,
           percentRemaining: 100,
           resetTimeIso: "2026-02-01T00:00:00.000Z",
+          reportedBasis: { used: 50, limit: 60000, remaining: 59950 },
         },
       },
       balance: {
-        usdBalance: 12.34,
+        usdBalanceRaw: "12.3400",
+        nanoBalanceRaw: "99.5",
       },
     });
 
@@ -65,30 +62,97 @@ describe("nanogpt provider", () => {
     expectAttemptedWithNoErrors(out);
     expect(visibleEntries(out.entries, "nanogpt")).toEqual([
       {
-        name: "NanoGPT Daily",
+        name: "nanogpt-day-quota",
         group: "NanoGPT",
-        label: "Daily:",
-        right: "5/5000",
         percentRemaining: 100,
         resetTimeIso: "2026-01-02T00:00:00.000Z",
+        semantic: {
+          metric: { kind: "window", window: "day" },
+          prominence: "primary",
+        },
+        basis: {
+          used: {
+            quantity: { decimal: "5", unit: { kind: "count", unit: "request" } },
+            authority: "provider_reported",
+          },
+          limit: {
+            quantity: { decimal: "5000", unit: { kind: "count", unit: "request" } },
+            authority: "provider_reported",
+          },
+          remaining: {
+            quantity: { decimal: "4995", unit: { kind: "count", unit: "request" } },
+            authority: "provider_reported",
+          },
+        },
       },
       {
-        name: "NanoGPT Monthly",
+        name: "nanogpt-month-quota",
         group: "NanoGPT",
-        label: "Monthly:",
-        right: "50/60000",
         percentRemaining: 100,
         resetTimeIso: "2026-02-01T00:00:00.000Z",
+        semantic: {
+          metric: { kind: "window", window: "month" },
+          prominence: "primary",
+        },
+        basis: {
+          used: {
+            quantity: { decimal: "50", unit: { kind: "count", unit: "request" } },
+            authority: "provider_reported",
+          },
+          limit: {
+            quantity: { decimal: "60000", unit: { kind: "count", unit: "request" } },
+            authority: "provider_reported",
+          },
+          remaining: {
+            quantity: { decimal: "59950", unit: { kind: "count", unit: "request" } },
+            authority: "provider_reported",
+          },
+        },
       },
       {
-        kind: "value",
-        name: "NanoGPT Balance",
+        kind: "quantity",
+        name: "nanogpt-current-balance",
         group: "NanoGPT",
-        label: "Balance:",
-        value: "$12.34",
+        semantic: {
+          metric: { kind: "component", component: "current_balance" },
+          prominence: "primary",
+        },
+        quantity: { decimal: "12.3400", unit: { kind: "currency", code: "USD" } },
       },
     ]);
     expect(out.presentation).toBeUndefined();
+  });
+
+  it("omits locally derived fallback values from provider-reported basis", async () => {
+    const { queryNanoGptQuota } = await import("../src/lib/nanogpt.js");
+    (queryNanoGptQuota as any).mockResolvedValueOnce({
+      success: true,
+      subscription: {
+        active: true,
+        state: "active",
+        enforceDailyLimit: false,
+        daily: {
+          used: 0,
+          limit: 100,
+          remaining: 75,
+          percentRemaining: 75,
+          reportedBasis: { limit: 100 },
+        },
+      },
+    });
+
+    const out = await nanoGptProvider.fetch({ config: {} } as any);
+
+    expect(visibleEntries(out.entries, "nanogpt")[0]).toMatchObject({
+      basis: {
+        limit: {
+          quantity: { decimal: "100", unit: { kind: "count", unit: "request" } },
+          authority: "provider_reported",
+        },
+      },
+    });
+    expect(out.entries[0]).not.toHaveProperty("basis.used");
+    expect(out.entries[0]).not.toHaveProperty("basis.remaining");
   });
 
   it("maps partial endpoint errors and non-active subscription state", async () => {
@@ -105,6 +169,7 @@ describe("nanogpt provider", () => {
           remaining: 0,
           percentRemaining: 0,
           resetTimeIso: "2026-01-02T00:00:00.000Z",
+          reportedBasis: { used: 100, limit: 100, remaining: 0 },
         },
       },
       endpointErrors: [
@@ -119,12 +184,28 @@ describe("nanogpt provider", () => {
     expect(out.attempted).toBe(true);
     expect(visibleEntries(out.entries, "nanogpt")).toEqual([
       {
-        name: "NanoGPT Daily",
+        name: "nanogpt-day-quota",
         group: "NanoGPT",
-        label: "Daily:",
-        right: "100/100",
         percentRemaining: 0,
         resetTimeIso: "2026-01-02T00:00:00.000Z",
+        semantic: {
+          metric: { kind: "window", window: "day" },
+          prominence: "primary",
+        },
+        basis: {
+          used: {
+            quantity: { decimal: "100", unit: { kind: "count", unit: "request" } },
+            authority: "provider_reported",
+          },
+          limit: {
+            quantity: { decimal: "100", unit: { kind: "count", unit: "request" } },
+            authority: "provider_reported",
+          },
+          remaining: {
+            quantity: { decimal: "0", unit: { kind: "count", unit: "request" } },
+            authority: "provider_reported",
+          },
+        },
       },
     ]);
     expect(out.errors).toEqual([
@@ -135,6 +216,41 @@ describe("nanogpt provider", () => {
       {
         label: "NanoGPT",
         message: "Subscription state: grace",
+      },
+    ]);
+  });
+
+  it("falls back to valid NANO and preserves its malformed USD sibling as a partial error", async () => {
+    const { queryNanoGptQuota } = await import("../src/lib/nanogpt.js");
+    (queryNanoGptQuota as any).mockResolvedValueOnce({
+      success: true,
+      balance: { nanoBalanceRaw: "26.71801147" },
+      endpointErrors: [
+        {
+          endpoint: "balance",
+          message: "NanoGPT balance response returned an invalid usd_balance decimal",
+        },
+      ],
+    });
+
+    const out = await nanoGptProvider.fetch({ config: {} } as any);
+
+    expect(visibleEntries(out.entries, "nanogpt")).toEqual([
+      {
+        kind: "quantity",
+        name: "nanogpt-current-balance",
+        group: "NanoGPT",
+        semantic: {
+          metric: { kind: "component", component: "current_balance" },
+          prominence: "primary",
+        },
+        quantity: { decimal: "26.71801147", unit: { kind: "custom", symbol: "NANO" } },
+      },
+    ]);
+    expect(out.errors).toEqual([
+      {
+        label: "NanoGPT Balance",
+        message: "NanoGPT balance response returned an invalid usd_balance decimal",
       },
     ]);
   });

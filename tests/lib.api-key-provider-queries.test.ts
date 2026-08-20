@@ -316,6 +316,21 @@ describe("simple API-key provider queries", () => {
   });
 
   describe("NanoGPT", () => {
+    const invalidBalanceSiblingCases = [
+      [
+        "USD",
+        { usd_balance: "12junk", nano_balance: "26.71801147" },
+        { nanoBalanceRaw: "26.71801147" },
+        "usd_balance",
+      ],
+      [
+        "NANO",
+        { usd_balance: "12.50", nano_balance: "anything" },
+        { usdBalanceRaw: "12.50" },
+        "nano_balance",
+      ],
+    ] as const;
+
     it("maps usage and balance from both authenticated endpoints", async () => {
       useNanoGptApiKey();
       const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -356,6 +371,7 @@ describe("simple API-key provider queries", () => {
             remaining: 4950,
             percentRemaining: 99,
             resetTimeIso: "2025-02-03T00:00:00.000Z",
+            reportedBasis: { used: 50, limit: 5000, remaining: 4950 },
           },
           monthly: {
             used: 1000,
@@ -363,16 +379,72 @@ describe("simple API-key provider queries", () => {
             remaining: 59000,
             percentRemaining: 98,
             resetTimeIso: "2025-02-13T00:00:00.000Z",
+            reportedBasis: { used: 1000, limit: 60000, remaining: 59000 },
           },
           currentPeriodEndIso: "2025-02-13T23:59:59.000Z",
           graceUntilIso: undefined,
         },
         balance: {
-          usdBalance: 129.46956147,
           usdBalanceRaw: "129.46956147",
           nanoBalanceRaw: "26.71801147",
         },
         endpointErrors: undefined,
+      });
+    });
+
+    it("keeps derived fallback arithmetic out of provider-reported basis facts", async () => {
+      useNanoGptApiKey();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL) =>
+          String(input).includes("/subscription/v1/usage")
+            ? jsonResponse({
+                active: true,
+                daily: { used: 25, remaining: 75 },
+                state: "active",
+              })
+            : jsonResponse({ usd_balance: "12.50" }),
+        ),
+      );
+
+      const result = await queryNanoGptQuota();
+      expect(result).toMatchObject({
+        success: true,
+        subscription: {
+          daily: {
+            used: 25,
+            limit: 100,
+            remaining: 75,
+            reportedBasis: { used: 25, remaining: 75 },
+          },
+        },
+      });
+      if (!result || !result.success) throw new Error("Expected NanoGPT success");
+      expect(result.subscription?.daily?.reportedBasis).not.toHaveProperty("limit");
+    });
+
+    it("uses the billing-period end only as the missing monthly reset fallback", async () => {
+      useNanoGptApiKey();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL) =>
+          String(input).includes("/subscription/v1/usage")
+            ? jsonResponse({
+                active: true,
+                limits: { monthly: 1000 },
+                monthly: { used: 100, remaining: 900 },
+                period: { currentPeriodEnd: "2030-02-01T12:34:56.000Z" },
+                state: "active",
+              })
+            : jsonResponse({ usd_balance: "12.50" }),
+        ),
+      );
+
+      await expect(queryNanoGptQuota()).resolves.toMatchObject({
+        success: true,
+        subscription: {
+          monthly: { resetTimeIso: "2030-02-01T12:34:56.000Z" },
+        },
       });
     });
 
@@ -414,8 +486,84 @@ describe("simple API-key provider queries", () => {
       await expect(queryNanoGptQuota()).resolves.toEqual({
         success: true,
         subscription: undefined,
-        balance: { usdBalance: 12.5, usdBalanceRaw: "12.50", nanoBalanceRaw: "3.25" },
+        balance: { usdBalanceRaw: "12.50", nanoBalanceRaw: "3.25" },
         endpointErrors: [{ endpoint: "usage", message: "NanoGPT API error 502: bad gateway" }],
+      });
+    });
+
+    it.each(
+      invalidBalanceSiblingCases,
+    )("validates the full %s decimal and preserves a valid sibling", async (_label, balancePayload, expectedBalance, invalidField) => {
+      useNanoGptApiKey();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL) =>
+          String(input).includes("/subscription/v1/usage")
+            ? jsonResponse({
+                active: true,
+                limits: { daily: 100 },
+                daily: { used: 25, remaining: 75, resetAt: 1_735_776_000_000 },
+                state: "active",
+              })
+            : jsonResponse(balancePayload),
+        ),
+      );
+
+      await expect(queryNanoGptQuota()).resolves.toMatchObject({
+        success: true,
+        subscription: { daily: { used: 25, limit: 100, remaining: 75 } },
+        balance: expectedBalance,
+        endpointErrors: [
+          {
+            endpoint: "balance",
+            message: `NanoGPT balance response returned an invalid ${invalidField} decimal`,
+          },
+        ],
+      });
+    });
+
+    it("keeps valid usage when every returned balance decimal is malformed", async () => {
+      useNanoGptApiKey();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL) =>
+          String(input).includes("/subscription/v1/usage")
+            ? jsonResponse({
+                active: true,
+                limits: { monthly: 1000 },
+                monthly: { used: 100, remaining: 900 },
+                state: "active",
+              })
+            : jsonResponse({ usd_balance: "12junk", nano_balance: "anything" }),
+        ),
+      );
+
+      await expect(queryNanoGptQuota()).resolves.toEqual({
+        success: true,
+        subscription: {
+          active: true,
+          state: "active",
+          enforceDailyLimit: false,
+          daily: undefined,
+          monthly: {
+            used: 100,
+            limit: 1000,
+            remaining: 900,
+            percentRemaining: 90,
+            resetTimeIso: undefined,
+            reportedBasis: { used: 100, limit: 1000, remaining: 900 },
+          },
+          currentPeriodEndIso: undefined,
+          graceUntilIso: undefined,
+        },
+        balance: undefined,
+        endpointErrors: [
+          {
+            endpoint: "balance",
+            message:
+              "NanoGPT balance response returned an invalid usd_balance decimal; NanoGPT balance response returned an invalid nano_balance decimal",
+          },
+        ],
       });
     });
 
@@ -450,7 +598,7 @@ describe("simple API-key provider queries", () => {
       await expect(queryNanoGptQuota()).resolves.toEqual({
         success: true,
         subscription: undefined,
-        balance: { usdBalance: 5, usdBalanceRaw: "5.00", nanoBalanceRaw: undefined },
+        balance: { usdBalanceRaw: "5.00" },
         endpointErrors: [
           {
             endpoint: "usage",

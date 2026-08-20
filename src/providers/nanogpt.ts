@@ -3,14 +3,14 @@
  */
 
 import type {
+  AccountingPercentageBasis,
+  AccountingWindow,
   QuotaProvider,
   QuotaProviderContext,
   QuotaProviderResult,
   QuotaToastEntry,
 } from "../lib/entries.js";
-import { fmtUsdAmount } from "../lib/format-utils.js";
 import {
-  formatNanoGptBalanceValue,
   getNanoGptKeyDiagnostics,
   hasNanoGptApiKeyConfigured,
   queryNanoGptQuota,
@@ -24,20 +24,73 @@ import {
   withStatusDetails,
 } from "./result-helpers.js";
 
-function formatUsageAmount(value: number): string {
-  if (!Number.isFinite(value)) return "0";
-  if (Number.isInteger(value)) return String(Math.trunc(value));
-  return value.toFixed(2).replace(/\.?0+$/, "");
+const REQUEST_UNIT = { kind: "count", unit: "request" } as const;
+const USD_UNIT = { kind: "currency", code: "USD" } as const;
+const NANO_UNIT = { kind: "custom", symbol: "NANO" } as const;
+
+function canonicalNumberDecimal(value: number): string {
+  if (!Number.isFinite(value)) throw new TypeError("NanoGPT usage value must be finite");
+  if (Object.is(value, -0)) return "0";
+
+  const raw = String(value);
+  if (!/[eE]/u.test(raw)) return raw;
+
+  const match = /^(-?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/u.exec(raw);
+  if (!match) throw new TypeError("NanoGPT usage value must be decimal-compatible");
+  const [, sign, integer, fraction = "", exponentRaw] = match;
+  const digits = `${integer}${fraction}`;
+  const decimalIndex = integer.length + Number(exponentRaw);
+  if (decimalIndex <= 0) return `${sign}0.${"0".repeat(-decimalIndex)}${digits}`;
+  if (decimalIndex >= digits.length) {
+    return `${sign}${digits}${"0".repeat(decimalIndex - digits.length)}`;
+  }
+  return `${sign}${digits.slice(0, decimalIndex)}.${digits.slice(decimalIndex)}`;
 }
 
-function formatUsageRight(window: { used: number; limit: number }): string {
-  return `${formatUsageAmount(window.used)}/${formatUsageAmount(window.limit)}`;
+function quotaBasis(window: {
+  reportedBasis: { used?: number; limit?: number; remaining?: number };
+}): AccountingPercentageBasis | undefined {
+  const basis: AccountingPercentageBasis = {};
+  for (const key of ["used", "limit", "remaining"] as const) {
+    const value = window.reportedBasis[key];
+    if (value === undefined) continue;
+    basis[key] = {
+      quantity: { decimal: canonicalNumberDecimal(value), unit: REQUEST_UNIT },
+      authority: "provider_reported",
+    };
+  }
+  return basis.used || basis.limit || basis.remaining ? basis : undefined;
 }
 
 type NanoGptQuotaSuccess = Extract<
   NonNullable<Awaited<ReturnType<typeof queryNanoGptQuota>>>,
   { success: true }
 >;
+
+function pushQuotaEntry(
+  entries: QuotaToastEntry[],
+  window: NonNullable<NonNullable<NanoGptQuotaSuccess["subscription"]>["daily"]>,
+  accountingWindow: AccountingWindow,
+): void {
+  const basis = quotaBasis(window);
+  entries.push({
+    accounting: {
+      resultType: "quota",
+      acquisitionMethod: "remote_api",
+      ownership: "maintained",
+      authority: "provider_reported",
+    },
+    name: `nanogpt-${accountingWindow}-quota`,
+    group: "NanoGPT",
+    percentRemaining: window.percentRemaining,
+    resetTimeIso: window.resetTimeIso,
+    semantic: {
+      metric: { kind: "window", window: accountingWindow },
+      prominence: "primary",
+    },
+    ...(basis ? { basis } : {}),
+  });
+}
 
 function mapNanoGptSuccess(result: NanoGptQuotaSuccess): QuotaProviderResult {
   const entries: QuotaToastEntry[] = [];
@@ -48,54 +101,28 @@ function mapNanoGptSuccess(result: NanoGptQuotaSuccess): QuotaProviderResult {
     })) ?? [];
 
   const subscription = result.subscription;
-  if (subscription?.daily) {
-    entries.push({
-      accounting: {
-        resultType: "quota",
-        acquisitionMethod: "remote_api",
-        ownership: "maintained",
-        authority: "provider_reported",
-      },
-      name: "NanoGPT Daily",
-      group: "NanoGPT",
-      label: "Daily:",
-      right: formatUsageRight(subscription.daily),
-      percentRemaining: subscription.daily.percentRemaining,
-      resetTimeIso: subscription.daily.resetTimeIso,
-    });
-  }
+  if (subscription?.daily) pushQuotaEntry(entries, subscription.daily, "day");
+  if (subscription?.monthly) pushQuotaEntry(entries, subscription.monthly, "month");
 
-  if (subscription?.monthly) {
+  const balance = result.balance;
+  if (balance?.usdBalanceRaw || balance?.nanoBalanceRaw) {
     entries.push({
-      accounting: {
-        resultType: "quota",
-        acquisitionMethod: "remote_api",
-        ownership: "maintained",
-        authority: "provider_reported",
-      },
-      name: "NanoGPT Monthly",
-      group: "NanoGPT",
-      label: "Monthly:",
-      right: formatUsageRight(subscription.monthly),
-      percentRemaining: subscription.monthly.percentRemaining,
-      resetTimeIso: subscription.monthly.resetTimeIso,
-    });
-  }
-
-  const balanceValue = result.balance ? formatNanoGptBalanceValue(result.balance) : null;
-  if (balanceValue) {
-    entries.push({
-      kind: "value",
+      kind: "quantity",
       accounting: {
         resultType: "balance",
         acquisitionMethod: "remote_api",
         ownership: "maintained",
         authority: "provider_reported",
       },
-      name: "NanoGPT Balance",
+      name: "nanogpt-current-balance",
       group: "NanoGPT",
-      label: "Balance:",
-      value: balanceValue,
+      semantic: {
+        metric: { kind: "component", component: "current_balance" },
+        prominence: "primary",
+      },
+      quantity: balance.usdBalanceRaw
+        ? { decimal: balance.usdBalanceRaw, unit: USD_UNIT }
+        : { decimal: balance.nanoBalanceRaw as string, unit: NANO_UNIT },
     });
   }
 
@@ -117,7 +144,7 @@ function mapNanoGptSuccess(result: NanoGptQuotaSuccess): QuotaProviderResult {
     usage: NonNullable<typeof subscription>["daily"],
   ): string | undefined =>
     usage
-      ? `${formatUsageAmount(usage.used)}/${formatUsageAmount(usage.limit)} remaining=${formatUsageAmount(usage.remaining)} percent_remaining=${usage.percentRemaining} reset_at=${usage.resetTimeIso ?? "(none)"}`
+      ? `${canonicalNumberDecimal(usage.used)}/${canonicalNumberDecimal(usage.limit)} remaining=${canonicalNumberDecimal(usage.remaining)} percent_remaining=${usage.percentRemaining} reset_at=${usage.resetTimeIso ?? "(none)"}`
       : undefined;
   const statusDetails = [
     ...statusDetailsFromRecord({
@@ -132,11 +159,8 @@ function mapNanoGptSuccess(result: NanoGptQuotaSuccess): QuotaProviderResult {
       monthly_usage: formatSubscriptionUsage(subscription?.monthly),
       billing_period_end: subscription ? (subscription.currentPeriodEndIso ?? "(none)") : undefined,
       grace_until: subscription?.graceUntilIso,
-      balance_usd:
-        typeof result.balance?.usdBalance === "number"
-          ? fmtUsdAmount(result.balance.usdBalance)
-          : "(none)",
-      balance_nano: result.balance?.nanoBalanceRaw ?? "(none)",
+      balance_usd: balance?.usdBalanceRaw ?? "(none)",
+      balance_nano: balance?.nanoBalanceRaw ?? "(none)",
     }),
     ...(result.endpointErrors ?? []).map((endpointError) => ({
       key: `live_error_${endpointError.endpoint}`,

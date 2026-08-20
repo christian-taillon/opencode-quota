@@ -282,6 +282,12 @@ export const PROVIDER_ACCOUNTING_LEDGER: Record<string, Array<QuotaToastEntry["a
       resultType: "budget",
       acquisitionMethod: "dashboard_scrape",
       ownership: "maintained",
+      authority: "locally_derived",
+    },
+    {
+      resultType: "status",
+      acquisitionMethod: "dashboard_scrape",
+      ownership: "maintained",
       authority: "provider_reported",
     },
   ],

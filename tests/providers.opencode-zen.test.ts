@@ -44,6 +44,82 @@ const budgetAccounting = {
   resultType: "budget",
   authority: "locally_derived",
 } as const;
+const statusAccounting = {
+  ...balanceAccounting,
+  resultType: "status",
+} as const;
+
+function balanceEntry(prominence: "primary" | "supplementary") {
+  return {
+    accounting: balanceAccounting,
+    kind: "quantity",
+    name: "zen-current-balance",
+    group: "OpenCode Zen",
+    semantic: {
+      metric: { kind: "component", component: "current_balance" },
+      prominence,
+    },
+    quantity: { decimal: "42.5", unit: { kind: "currency", code: "USD" } },
+  } as const;
+}
+
+function autoReloadEntry(value = false) {
+  return {
+    accounting: statusAccounting,
+    kind: "boolean",
+    name: "zen-auto-reload",
+    group: "OpenCode Zen",
+    semantic: {
+      metric: { kind: "component", component: "auto_reload" },
+      prominence: "supplementary",
+    },
+    value,
+  } as const;
+}
+
+function budgetEntry(
+  options: {
+    percentRemaining?: number;
+    used?: string;
+    limit?: string;
+    remaining?: string;
+    limitAuthority?: "provider_reported" | "user_configured";
+  } = {},
+) {
+  return {
+    accounting: budgetAccounting,
+    name: "zen-monthly-budget",
+    group: "OpenCode Zen",
+    percentRemaining: options.percentRemaining ?? 94.25,
+    semantic: {
+      metric: { kind: "window", window: "month" },
+      prominence: "primary",
+    },
+    basis: {
+      used: {
+        quantity: {
+          decimal: options.used ?? "5.75",
+          unit: { kind: "currency", code: "USD" },
+        },
+        authority: "provider_reported",
+      },
+      limit: {
+        quantity: {
+          decimal: options.limit ?? "100",
+          unit: { kind: "currency", code: "USD" },
+        },
+        authority: options.limitAuthority ?? "provider_reported",
+      },
+      remaining: {
+        quantity: {
+          decimal: options.remaining ?? "94.25",
+          unit: { kind: "currency", code: "USD" },
+        },
+        authority: "locally_derived",
+      },
+    },
+  } as const;
+}
 
 function configured(): void {
   mocks.resolveOpenCodeZenConfigCached.mockResolvedValueOnce({
@@ -143,22 +219,14 @@ describe("opencode Zen provider", () => {
     expect(result.errors[0]?.message).toBe("OpenCode Zen billing error 403");
   });
 
-  it("returns the original value entry when no monthly limit is available", async () => {
+  it("makes structured balance primary when no monthly budget is available", async () => {
     configured();
     success();
 
     const result = await opencodeZenProvider.fetch(context());
 
     expectAttemptedWithNoErrors(result);
-    expect(result.entries).toEqual([
-      {
-        accounting: balanceAccounting,
-        kind: "value",
-        name: "",
-        group: "OpenCode Zen",
-        value: "$42.50",
-      },
-    ]);
+    expect(result.entries).toEqual([balanceEntry("primary"), autoReloadEntry()]);
     expect(result.presentation).toBeUndefined();
   });
 
@@ -170,24 +238,24 @@ describe("opencode Zen provider", () => {
 
     expectAttemptedWithNoErrors(result);
     expect(result.entries).toEqual([
-      {
-        accounting: budgetAccounting,
-        name: "",
-        group: "OpenCode Zen",
-        percentRemaining: 94.25,
-      },
+      budgetEntry(),
+      balanceEntry("supplementary"),
+      autoReloadEntry(),
     ]);
     expect(result.statusDetails).toEqual([
       { key: "config_state", value: "configured" },
       { key: "config_source", value: "test" },
       { key: "config_checked_paths", value: "(none)" },
-      { key: "balance_usd", value: "$42.50" },
-      { key: "monthly_limit_usd", value: "$100.00" },
+      { key: "balance_usd", value: "USD 42.5" },
+      { key: "monthly_limit_usd", value: "USD 100" },
       { key: "last_payment_usd", value: "(none)" },
+      { key: "auto_reload", value: "false" },
+      { key: "auto_reload_amount_raw", value: "(none)" },
+      { key: "auto_reload_trigger_raw", value: "(none)" },
     ]);
   });
 
-  it("keeps reload fields out of the active provider presentation until provider migration", async () => {
+  it("emits only the contract-backed reload boolean and keeps ambiguous values diagnostic", async () => {
     configured();
     success({
       monthlyLimit: 100,
@@ -201,13 +269,20 @@ describe("opencode Zen provider", () => {
 
     expectAttemptedWithNoErrors(result);
     expect(result.entries).toEqual([
-      {
-        accounting: budgetAccounting,
-        name: "",
-        group: "OpenCode Zen",
-        percentRemaining: 94.25,
-      },
+      budgetEntry(),
+      balanceEntry("supplementary"),
+      autoReloadEntry(true),
     ]);
+    expect(
+      result.entries.some(
+        (entry) =>
+          entry.semantic?.metric.kind === "component" &&
+          (entry.semantic.metric.component === "auto_reload_amount" ||
+            entry.semantic.metric.component === "auto_reload_trigger"),
+      ),
+    ).toBe(false);
+    expect(result.statusDetails).toContainEqual({ key: "auto_reload_amount_raw", value: "20" });
+    expect(result.statusDetails).toContainEqual({ key: "auto_reload_trigger_raw", value: "5" });
     expect(result.presentation).toBeUndefined();
   });
 
@@ -218,7 +293,16 @@ describe("opencode Zen provider", () => {
     const result = await opencodeZenProvider.fetch(context({ opencodeMonthlyLimit: 200 }));
 
     expectAttemptedWithNoErrors(result);
-    expect(result.entries[0]).toMatchObject({ percentRemaining: 97.125 });
+    expect(result.entries).toEqual([
+      budgetEntry({
+        percentRemaining: 97.125,
+        limit: "200",
+        remaining: "194.25",
+        limitAuthority: "user_configured",
+      }),
+      balanceEntry("supplementary"),
+      autoReloadEntry(),
+    ]);
   });
 
   it("does not treat the last payment as a monthly limit", async () => {
@@ -228,27 +312,27 @@ describe("opencode Zen provider", () => {
     const result = await opencodeZenProvider.fetch(context());
 
     expectAttemptedWithNoErrors(result);
-    expect(result.entries[0]).toMatchObject({ kind: "value", value: "$42.50" });
+    expect(result.entries).toEqual([balanceEntry("primary"), autoReloadEntry()]);
   });
 
-  it("uses value display when monthly usage is unavailable", async () => {
+  it("uses structured balance when monthly usage is unavailable", async () => {
     configured();
     success({ monthlyLimit: 100, monthlyUsage: null });
 
     const result = await opencodeZenProvider.fetch(context());
 
     expectAttemptedWithNoErrors(result);
-    expect(result.entries[0]).toMatchObject({ kind: "value", value: "$42.50" });
+    expect(result.entries).toEqual([balanceEntry("primary"), autoReloadEntry()]);
   });
 
-  it("uses value display for a zero page limit instead of emitting NaN", async () => {
+  it("uses structured balance for a zero page limit instead of emitting NaN", async () => {
     configured();
     success({ monthlyLimit: 0 });
 
     const result = await opencodeZenProvider.fetch(context());
 
     expectAttemptedWithNoErrors(result);
-    expect(result.entries[0]).toMatchObject({ kind: "value", value: "$42.50" });
+    expect(result.entries).toEqual([balanceEntry("primary"), autoReloadEntry()]);
     expect(JSON.stringify(result)).not.toContain("NaN");
   });
 
@@ -259,7 +343,9 @@ describe("opencode Zen provider", () => {
     const result = await opencodeZenProvider.fetch(context());
 
     expectAttemptedWithNoErrors(result);
-    expect(result.entries[0]).toMatchObject({ percentRemaining: 0 });
+    expect(result.entries[0]).toEqual(
+      budgetEntry({ percentRemaining: 0, used: "200", remaining: "0" }),
+    );
   });
 
   it("passes a user-configured timeout and otherwise keeps the scraper default", async () => {

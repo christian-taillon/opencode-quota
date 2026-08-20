@@ -57,6 +57,14 @@ const balance: QuotaToastEntry = {
   quantity: { decimal: "42.5", unit: { kind: "currency", code: "USD" } },
 };
 
+const primaryBalance: QuotaToastEntry = {
+  ...balance,
+  semantic: {
+    metric: { kind: "component", component: "current_balance" },
+    prominence: "primary",
+  },
+};
+
 const autoReload: QuotaToastEntry = {
   kind: "boolean",
   accounting: { ...providerAccounting, resultType: "status" },
@@ -115,6 +123,20 @@ describe("OpenCode Zen structured four-surface formatting", () => {
     }
     expect(outputs.command).toContain("Remaining: USD 94.25");
     expect(outputs.toast).toContain("Remaining: USD 94.25");
+  });
+
+  it("renders a primary structured balance fallback without financial legacy fields", () => {
+    const outputs = renderSurfaces({ entries: [primaryBalance], errors: [] }, "summary");
+
+    for (const output of Object.values(outputs)) {
+      expect(output).toContain("OpenCode Zen");
+      expect(output).toContain("Current balance");
+      expect(output).toContain("USD 42.50");
+      expect(output).not.toContain("$");
+    }
+    expect(primaryBalance).not.toHaveProperty("right");
+    expect(primaryBalance).not.toHaveProperty("barValue");
+    expect(primaryBalance).not.toHaveProperty("value");
   });
 
   it("renders detailed basis and supplementary values within each surface width", () => {
