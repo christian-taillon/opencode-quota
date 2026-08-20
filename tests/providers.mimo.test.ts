@@ -142,37 +142,60 @@ describe("Xiaomi MiMo provider", () => {
       accounting: quotaAccounting,
       name: "Xiaomi MiMo: Standard [standard_monthly] Monthly",
       group: "Xiaomi MiMo: Standard [standard_monthly]",
-      label: "Monthly:",
-      right: "10100158/200000000",
       percentRemaining: 94.949921,
+      semantic: {
+        metric: { kind: "window", window: "month" },
+        prominence: "primary",
+      },
+      basis: {
+        used: {
+          quantity: { decimal: "10100158", unit: { kind: "count", unit: "token" } },
+          authority: "provider_reported",
+        },
+        limit: {
+          quantity: { decimal: "200000000", unit: { kind: "count", unit: "token" } },
+          authority: "provider_reported",
+        },
+      },
     });
     expect(result.entries[0]).not.toHaveProperty("resetTimeIso");
     expect(result.entries.slice(1)).toEqual([
       {
         accounting: balanceAccounting,
-        kind: "value",
-        name: "Xiaomi MiMo Total Balance",
+        kind: "quantity",
+        name: "xiaomi-mimo-total_balance",
         group: "Xiaomi MiMo: Standard [standard_monthly]",
-        label: "Total:",
-        value: "$50.00",
+        semantic: {
+          metric: { kind: "component", component: "total_balance" },
+          prominence: "primary",
+        },
+        quantity: { decimal: "50", unit: { kind: "currency", code: "USD" } },
       },
       {
         accounting: balanceAccounting,
-        kind: "value",
-        name: "Xiaomi MiMo Cash Balance",
+        kind: "quantity",
+        name: "xiaomi-mimo-cash_balance",
         group: "Xiaomi MiMo: Standard [standard_monthly]",
-        label: "Cash:",
-        value: "$30.00",
+        semantic: {
+          metric: { kind: "component", component: "cash_balance" },
+          prominence: "supplementary",
+        },
+        quantity: { decimal: "30", unit: { kind: "currency", code: "USD" } },
       },
       {
         accounting: balanceAccounting,
-        kind: "value",
-        name: "Xiaomi MiMo Gift Balance",
+        kind: "quantity",
+        name: "xiaomi-mimo-gift_balance",
         group: "Xiaomi MiMo: Standard [standard_monthly]",
-        label: "Gift:",
-        value: "$20.00",
+        semantic: {
+          metric: { kind: "component", component: "gift_balance" },
+          prominence: "supplementary",
+        },
+        quantity: { decimal: "20", unit: { kind: "currency", code: "USD" } },
       },
     ]);
+    expect(result.entries.every((entry) => !("right" in entry))).toBe(true);
+    expect(result.entries.every((entry) => entry.kind !== "value")).toBe(true);
     visibleEntries(result.entries, "xiaomi");
   });
 
@@ -193,7 +216,10 @@ describe("Xiaomi MiMo provider", () => {
     const result = await xiaomiProvider.fetch(context());
 
     expect(result.entries[0]?.group).toBe("Xiaomi MiMo: Premium Plan [premium]");
-    expect(result.entries[1]).toMatchObject({ value: "EUR 1.00" });
+    expect(result.entries[1]).toMatchObject({
+      kind: "quantity",
+      quantity: { decimal: "1", unit: { kind: "currency", code: "EUR" } },
+    });
     expect(JSON.stringify(result)).not.toContain("\u001b");
     expect(JSON.stringify(result)).not.toContain("\u0007");
   });
@@ -236,9 +262,21 @@ describe("Xiaomi MiMo provider", () => {
         accounting: quotaAccounting,
         name: "Xiaomi MiMo Monthly",
         group: "Xiaomi MiMo",
-        label: "Monthly:",
-        right: "10100158/200000000",
         percentRemaining: 94.949921,
+        semantic: {
+          metric: { kind: "window", window: "month" },
+          prominence: "primary",
+        },
+        basis: {
+          used: {
+            quantity: { decimal: "10100158", unit: { kind: "count", unit: "token" } },
+            authority: "provider_reported",
+          },
+          limit: {
+            quantity: { decimal: "200000000", unit: { kind: "count", unit: "token" } },
+            authority: "provider_reported",
+          },
+        },
       },
     ]);
     expect(result.errors).toEqual([
@@ -265,10 +303,27 @@ describe("Xiaomi MiMo provider", () => {
 
     const result = await xiaomiProvider.fetch(context());
 
-    expect(result.entries.map((entry) => entry.label)).toEqual(["Total:", "Gift:"]);
-    expect(result.entries.map((entry) => ("value" in entry ? entry.value : null))).toEqual([
-      "0.00",
-      "0.00",
+    expect(visibleEntries(result.entries, "xiaomi")).toEqual([
+      {
+        kind: "quantity",
+        name: "xiaomi-mimo-total_balance",
+        group: "Xiaomi MiMo: Standard [standard_monthly]",
+        semantic: {
+          metric: { kind: "component", component: "total_balance" },
+          prominence: "primary",
+        },
+        quantity: { decimal: "0", unit: { kind: "count", unit: "credit" } },
+      },
+      {
+        kind: "quantity",
+        name: "xiaomi-mimo-gift_balance",
+        group: "Xiaomi MiMo: Standard [standard_monthly]",
+        semantic: {
+          metric: { kind: "component", component: "gift_balance" },
+          prominence: "supplementary",
+        },
+        quantity: { decimal: "0", unit: { kind: "count", unit: "credit" } },
+      },
     ]);
     expect(result.errors).toEqual([{ label: "Xiaomi MiMo", message: "usage unavailable" }]);
   });

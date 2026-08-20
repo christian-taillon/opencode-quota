@@ -146,6 +146,17 @@ describe("MiMo response parsers", () => {
       gift: 2.5,
       currency: "EUR",
     });
+    expect(
+      parseMimoBalanceResponse({
+        code: 0,
+        data: { balance: "12.50", currency: "US$" },
+      }),
+    ).toEqual({
+      total: 12.5,
+      cash: null,
+      gift: null,
+      currency: null,
+    });
     expect(parseMimoBalanceResponse({ code: 0, data: {} })).toEqual({
       total: null,
       cash: null,

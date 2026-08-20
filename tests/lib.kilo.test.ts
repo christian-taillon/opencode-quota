@@ -114,6 +114,28 @@ describe("Kilo Gateway API client", () => {
     });
   });
 
+  it("preserves the reset for an active pass with zero total credits", async () => {
+    mockResponse({
+      ok: true,
+      status: 200,
+      json: statePayload({
+        currentPeriodBaseCreditsUsd: 0,
+        currentPeriodUsageUsd: 0,
+        currentPeriodBonusCreditsUsd: 0,
+      }),
+    });
+
+    await expect(queryKiloPassState()).resolves.toEqual({
+      success: true,
+      baseCreditsUsd: 0,
+      usageUsd: 0,
+      bonusCreditsUsd: 0,
+      remainingUsd: 0,
+      overageUsd: 0,
+      resetTimeIso: "2099-02-01T00:00:00.000Z",
+    });
+  });
+
   it("accepts the unwrapped envelope, defaults missing bonus to zero, and uses renewal", async () => {
     mockResponse({
       ok: true,

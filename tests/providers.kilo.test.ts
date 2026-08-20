@@ -65,7 +65,7 @@ describe("Kilo Gateway provider", () => {
     );
   });
 
-  it("shows only the Kilo Pass percentage and amount left on human entries", async () => {
+  it("maps one structured Kilo Pass percentage with complete USD basis", async () => {
     mocks.queryKiloQuota.mockResolvedValueOnce({
       success: true,
       mode: "kilo_pass",
@@ -83,41 +83,39 @@ describe("Kilo Gateway provider", () => {
     expect(mocks.queryKiloQuota).toHaveBeenCalledWith({ requestTimeoutMs: 9000 });
     expect(visibleEntries(out.entries, "kilo")).toEqual([
       {
-        name: "Kilo Gateway Credits",
+        name: "kilo-gateway-credits",
         group: "Kilo Gateway",
-        label: "Credits:",
-        metricLabel: "Credits",
-        right: "$12.50 left",
         percentRemaining: 83.33333333333334,
+        semantic: {
+          metric: { kind: "component", component: "remaining_credits" },
+          prominence: "primary",
+        },
+        basis: {
+          used: {
+            quantity: { decimal: "2.5", unit: { kind: "currency", code: "USD" } },
+            authority: "provider_reported",
+          },
+          limit: {
+            quantity: { decimal: "15", unit: { kind: "currency", code: "USD" } },
+            authority: "locally_derived",
+          },
+          remaining: {
+            quantity: { decimal: "12.5", unit: { kind: "currency", code: "USD" } },
+            authority: "locally_derived",
+          },
+        },
         resetTimeIso: "2099-02-01T00:00:00.000Z",
       },
-      {
-        kind: "value",
-        name: "Kilo Gateway Remaining Credits",
-        group: "Kilo Gateway",
-        label: "Left:",
-        metricLabel: "Left",
-        value: "$12.50",
-      },
     ]);
-    expect(out.entries.map((entry) => entry.accounting)).toEqual([
-      {
-        resultType: "quota",
-        acquisitionMethod: "remote_api",
-        ownership: "maintained",
-        authority: "locally_derived",
-      },
-      {
-        resultType: "quota",
-        acquisitionMethod: "remote_api",
-        ownership: "maintained",
-        authority: "locally_derived",
-      },
-    ]);
-    expect(out.presentation).toEqual({
-      singleWindowDisplayName: "Kilo Gateway",
-      singleWindowShowRight: true,
+    expect(out.entries[0]?.accounting).toEqual({
+      resultType: "quota",
+      acquisitionMethod: "remote_api",
+      ownership: "maintained",
+      authority: "locally_derived",
     });
+    expect(out.entries[0]).not.toHaveProperty("right");
+    expect(out.entries[0]?.kind).not.toBe("value");
+    expect(out.presentation).toBeUndefined();
     expect(out.statusDetails).toEqual(
       expect.arrayContaining([
         { key: "accounting_mode", value: "kilo_pass" },
@@ -142,7 +140,7 @@ describe("Kilo Gateway provider", () => {
     expect(JSON.stringify(out.entries)).not.toContain("$5.00");
   });
 
-  it("preserves the amount-left summary through single-window projection", async () => {
+  it("preserves the semantic credits row through single-window projection", async () => {
     mocks.queryKiloQuota.mockResolvedValueOnce({
       success: true,
       mode: "kilo_pass",
@@ -182,7 +180,16 @@ describe("Kilo Gateway provider", () => {
       expect.objectContaining({
         name: "[Kilo Gateway]",
         percentRemaining: 83.33333333333334,
-        right: "$12.50 left",
+        semantic: {
+          metric: { kind: "component", component: "remaining_credits" },
+          prominence: "primary",
+        },
+        basis: expect.objectContaining({
+          remaining: {
+            quantity: { decimal: "12.5", unit: { kind: "currency", code: "USD" } },
+            authority: "locally_derived",
+          },
+        }),
       }),
     ]);
   });
@@ -202,22 +209,29 @@ describe("Kilo Gateway provider", () => {
 
     expectAttemptedWithNoErrors(out);
     expect(visibleEntries(out.entries, "kilo")).toEqual([
-      {
-        name: "Kilo Gateway Credits",
+      expect.objectContaining({
+        name: "kilo-gateway-credits",
         group: "Kilo Gateway",
-        label: "Credits:",
-        metricLabel: "Credits",
-        right: "$7.50 left",
         percentRemaining: 75,
-      },
-      {
-        kind: "value",
-        name: "Kilo Gateway Remaining Credits",
-        group: "Kilo Gateway",
-        label: "Left:",
-        metricLabel: "Left",
-        value: "$7.50",
-      },
+        semantic: {
+          metric: { kind: "component", component: "remaining_credits" },
+          prominence: "primary",
+        },
+        basis: {
+          used: {
+            quantity: { decimal: "2.5", unit: { kind: "currency", code: "USD" } },
+            authority: "provider_reported",
+          },
+          limit: {
+            quantity: { decimal: "10", unit: { kind: "currency", code: "USD" } },
+            authority: "locally_derived",
+          },
+          remaining: {
+            quantity: { decimal: "7.5", unit: { kind: "currency", code: "USD" } },
+            authority: "locally_derived",
+          },
+        },
+      }),
     ]);
   });
 
@@ -236,22 +250,29 @@ describe("Kilo Gateway provider", () => {
 
     expectAttemptedWithNoErrors(out);
     expect(visibleEntries(out.entries, "kilo")).toEqual([
-      {
-        name: "Kilo Gateway Credits",
+      expect.objectContaining({
+        name: "kilo-gateway-credits",
         group: "Kilo Gateway",
-        label: "Credits:",
-        metricLabel: "Credits",
-        right: "$0.00 left",
         percentRemaining: 0,
-      },
-      {
-        kind: "value",
-        name: "Kilo Gateway Remaining Credits",
-        group: "Kilo Gateway",
-        label: "Left:",
-        metricLabel: "Left",
-        value: "$0.00",
-      },
+        semantic: {
+          metric: { kind: "component", component: "remaining_credits" },
+          prominence: "primary",
+        },
+        basis: {
+          used: {
+            quantity: { decimal: "12", unit: { kind: "currency", code: "USD" } },
+            authority: "provider_reported",
+          },
+          limit: {
+            quantity: { decimal: "10", unit: { kind: "currency", code: "USD" } },
+            authority: "locally_derived",
+          },
+          remaining: {
+            quantity: { decimal: "0", unit: { kind: "currency", code: "USD" } },
+            authority: "locally_derived",
+          },
+        },
+      }),
     ]);
     expect(out.statusDetails).toEqual(
       expect.arrayContaining([{ key: "overage_usd", value: "$2.00" }]),
@@ -283,12 +304,14 @@ describe("Kilo Gateway provider", () => {
     expectAttemptedWithNoErrors(out);
     expect(visibleEntries(out.entries, "kilo")).toEqual([
       {
-        kind: "value",
-        name: "Kilo Gateway Remaining Credits",
+        kind: "quantity",
+        name: "kilo-gateway-remaining-credits",
         group: "Kilo Gateway",
-        label: "Left:",
-        metricLabel: "Left",
-        value: "$0.00",
+        semantic: {
+          metric: { kind: "component", component: "remaining_credits" },
+          prominence: "primary",
+        },
+        quantity: { decimal: "0", unit: { kind: "currency", code: "USD" } },
         resetTimeIso: "2099-02-01T00:00:00.000Z",
       },
     ]);
@@ -306,11 +329,14 @@ describe("Kilo Gateway provider", () => {
     expectAttemptedWithNoErrors(out);
     expect(visibleEntries(out.entries, "kilo")).toEqual([
       {
-        kind: "value",
-        name: "Kilo Gateway Balance",
+        kind: "quantity",
+        name: "kilo-gateway-total-balance",
         group: "Kilo Gateway",
-        label: "Balance:",
-        value: "$8.25",
+        semantic: {
+          metric: { kind: "component", component: "total_balance" },
+          prominence: "primary",
+        },
+        quantity: { decimal: "8.25", unit: { kind: "currency", code: "USD" } },
       },
     ]);
     expect(out.entries[0]?.accounting).toEqual({
