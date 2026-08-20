@@ -94,6 +94,12 @@ describe("accounting-format", () => {
     ).toBe("25.5 NANO");
     expect(formatAccountingBoolean(true)).toBe("Enabled");
     expect(formatAccountingBoolean(false)).toBe("Disabled");
+    const availability = {
+      metric: { kind: "named", name: "Availability" },
+      prominence: "primary",
+    } as const;
+    expect(formatAccountingBoolean(true, availability)).toBe("Available");
+    expect(formatAccountingBoolean(false, availability)).toBe("Low balance");
   });
 
   it("formats summary and detailed basis facts without relabeling them", () => {

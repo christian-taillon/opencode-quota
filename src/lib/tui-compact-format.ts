@@ -145,7 +145,7 @@ function getSemanticValue(
       : null;
   }
   if (isQuantityEntry(entry)) return formatAccountingQuantity(entry.quantity);
-  if (isBooleanEntry(entry)) return formatAccountingBoolean(entry.value);
+  if (isBooleanEntry(entry)) return formatAccountingBoolean(entry.value, entry.semantic);
   if (isValueEntry(entry)) return compactText(entry.value);
   return null;
 }

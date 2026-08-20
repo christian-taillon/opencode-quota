@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { queryChutesQuota } from "../src/lib/chutes.js";
-import { formatDeepSeekBalanceValue, queryDeepSeekBalance } from "../src/lib/deepseek.js";
+import { queryDeepSeekBalance } from "../src/lib/deepseek.js";
 import { queryNanoGptQuota } from "../src/lib/nanogpt.js";
 import { resolveNanoGptApiKey } from "../src/lib/nanogpt-config.js";
 import { querySyntheticQuota } from "../src/lib/synthetic.js";
@@ -653,6 +653,7 @@ describe("simple API-key provider queries", () => {
             toppedUpBalance: "10.34",
           },
         ],
+        parseIssues: [],
       });
       expect(fetchMock).toHaveBeenCalledWith(
         "https://api.deepseek.com/user/balance",
@@ -667,7 +668,7 @@ describe("simple API-key provider queries", () => {
       );
     });
 
-    it("normalizes malformed balance strings", async () => {
+    it("preserves exact valid components and reports malformed decimals without zero coercion", async () => {
       stubJsonFetch({
         is_available: true,
         balance_infos: [
@@ -679,10 +680,15 @@ describe("simple API-key provider queries", () => {
           },
         ],
       });
-      const result = await queryDeepSeekBalance();
-      expect(result && result.success ? result.balanceInfos : []).toEqual([
-        { currency: "USD", totalBalance: "0.00", grantedBalance: "0.00", toppedUpBalance: "0.00" },
-      ]);
+      await expect(queryDeepSeekBalance()).resolves.toEqual({
+        success: true,
+        isAvailable: true,
+        balanceInfos: [{ currency: "USD", grantedBalance: "1.2345678901234567890" }],
+        parseIssues: [
+          { currency: "USD", field: "total_balance" },
+          { currency: "USD", field: "topped_up_balance" },
+        ],
+      });
     });
 
     it("filters unsupported currencies and preserves CNY balances", async () => {
@@ -694,9 +700,12 @@ describe("simple API-key provider queries", () => {
         ],
       });
       const result = await queryDeepSeekBalance();
-      expect(result && result.success ? result.balanceInfos : []).toEqual([
-        { currency: "CNY", totalBalance: "88.00", grantedBalance: "0.00", toppedUpBalance: "0.00" },
-      ]);
+      await expect(result).toEqual({
+        success: true,
+        isAvailable: false,
+        balanceInfos: [{ currency: "CNY", totalBalance: "88.00" }],
+        parseIssues: [],
+      });
     });
 
     it("reports unexpected response shapes as sanitized errors", async () => {
@@ -705,11 +714,6 @@ describe("simple API-key provider queries", () => {
         success: false,
         error: "DeepSeek balance response returned an unexpected response shape",
       });
-    });
-
-    it("formats USD and CNY balances", () => {
-      expect(formatDeepSeekBalanceValue({ currency: "USD", totalBalance: "12.34" })).toBe("$12.34");
-      expect(formatDeepSeekBalanceValue({ currency: "CNY", totalBalance: "88.00" })).toBe("¥88.00");
     });
   });
 });

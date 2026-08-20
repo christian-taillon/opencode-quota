@@ -129,7 +129,7 @@ export function formatQuotaRowsGrouped(params: {
       const structuredValue = isQuantityEntry(entry)
         ? formatAccountingQuantity(entry.quantity)
         : isBooleanEntry(entry)
-          ? formatAccountingBoolean(entry.value)
+          ? formatAccountingBoolean(entry.value, entry.semantic)
           : null;
       if (isValueEntry(entry) || structuredValue !== null) {
         const isAtomicValue = structuredValue !== null;

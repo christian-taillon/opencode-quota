@@ -410,7 +410,7 @@ function buildSemanticPromptBarEntry(
     : isQuantityEntry(entry)
       ? formatAccountingQuantity(entry.quantity)
       : isBooleanEntry(entry)
-        ? formatAccountingBoolean(entry.value)
+        ? formatAccountingBoolean(entry.value, entry.semantic)
         : isValueEntry(entry)
           ? entry.value
           : null;

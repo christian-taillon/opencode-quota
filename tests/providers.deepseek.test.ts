@@ -16,10 +16,6 @@ vi.mock("../src/lib/deepseek.js", () => ({
     checkedPaths: [],
     authPaths: [],
   })),
-  formatDeepSeekBalanceValue: vi.fn(
-    (balance: { currency: "CNY" | "USD"; totalBalance: string }) =>
-      `${balance.currency === "CNY" ? "¥" : "$"}${balance.totalBalance}`,
-  ),
 }));
 
 vi.mock("../src/lib/provider-availability.js", () => ({
@@ -35,7 +31,7 @@ describe("deepseek provider", () => {
     expectNotAttempted(out);
   });
 
-  it("maps balance infos into grouped value rows", async () => {
+  it("maps separate currencies and exact source precision into complete semantic rows", async () => {
     const { queryDeepSeekBalance } = await import("../src/lib/deepseek.js");
     (queryDeepSeekBalance as any).mockResolvedValueOnce({
       success: true,
@@ -43,9 +39,9 @@ describe("deepseek provider", () => {
       balanceInfos: [
         {
           currency: "USD",
-          totalBalance: "12.34",
+          totalBalance: "12.340000000000000001",
           grantedBalance: "2.00",
-          toppedUpBalance: "10.34",
+          toppedUpBalance: "10.340000000000000001",
         },
         {
           currency: "CNY",
@@ -54,6 +50,7 @@ describe("deepseek provider", () => {
           toppedUpBalance: "88.00",
         },
       ],
+      parseIssues: [],
     });
 
     const out = await deepseekProvider.fetch({ config: { requestTimeoutMs: 9000 } } as any);
@@ -61,41 +58,130 @@ describe("deepseek provider", () => {
     expect(queryDeepSeekBalance).toHaveBeenCalledWith({ requestTimeoutMs: 9000 });
     expect(visibleEntries(out.entries, "deepseek")).toEqual([
       {
-        kind: "value",
-        name: "DeepSeek Balance",
+        kind: "quantity",
+        name: "deepseek-usd-total-balance",
         group: "DeepSeek",
-        label: "Balance:",
-        value: "$12.34",
+        semantic: {
+          metric: { kind: "component", component: "total_balance" },
+          prominence: "primary",
+        },
+        quantity: {
+          decimal: "12.340000000000000001",
+          unit: { kind: "currency", code: "USD" },
+        },
       },
       {
-        kind: "value",
-        name: "DeepSeek Balance",
+        kind: "quantity",
+        name: "deepseek-usd-granted-balance",
         group: "DeepSeek",
-        label: "Balance:",
-        value: "¥88.00",
+        semantic: {
+          metric: { kind: "component", component: "granted_balance" },
+          prominence: "supplementary",
+        },
+        quantity: { decimal: "2.00", unit: { kind: "currency", code: "USD" } },
+      },
+      {
+        kind: "quantity",
+        name: "deepseek-usd-topped-up-balance",
+        group: "DeepSeek",
+        semantic: {
+          metric: { kind: "component", component: "topped_up_balance" },
+          prominence: "supplementary",
+        },
+        quantity: {
+          decimal: "10.340000000000000001",
+          unit: { kind: "currency", code: "USD" },
+        },
+      },
+      {
+        kind: "quantity",
+        name: "deepseek-cny-total-balance",
+        group: "DeepSeek",
+        semantic: {
+          metric: { kind: "component", component: "total_balance" },
+          prominence: "primary",
+        },
+        quantity: { decimal: "88.00", unit: { kind: "currency", code: "CNY" } },
+      },
+      {
+        kind: "quantity",
+        name: "deepseek-cny-granted-balance",
+        group: "DeepSeek",
+        semantic: {
+          metric: { kind: "component", component: "granted_balance" },
+          prominence: "supplementary",
+        },
+        quantity: { decimal: "0.00", unit: { kind: "currency", code: "CNY" } },
+      },
+      {
+        kind: "quantity",
+        name: "deepseek-cny-topped-up-balance",
+        group: "DeepSeek",
+        semantic: {
+          metric: { kind: "component", component: "topped_up_balance" },
+          prominence: "supplementary",
+        },
+        quantity: { decimal: "88.00", unit: { kind: "currency", code: "CNY" } },
       },
     ]);
+    expect(out.entries.every((entry) => entry.accounting.resultType === "balance")).toBe(true);
+    expect(out.entries.every((entry) => entry.accounting.authority === "provider_reported")).toBe(
+      true,
+    );
+    expect(out.entries.every((entry) => !("right" in entry))).toBe(true);
+    expect(out.entries.every((entry) => !("barValue" in entry))).toBe(true);
+    expect(out.entries.every((entry) => entry.kind !== "value")).toBe(true);
   });
 
-  it("maps unavailable empty balance responses into a status row", async () => {
+  it("keeps valid components and reports a malformed total without inventing zero", async () => {
     const { queryDeepSeekBalance } = await import("../src/lib/deepseek.js");
     (queryDeepSeekBalance as any).mockResolvedValueOnce({
       success: true,
-      isAvailable: false,
+      isAvailable: true,
+      balanceInfos: [
+        { currency: "USD", grantedBalance: "1.25", toppedUpBalance: "3.75" },
+        { currency: "CNY", totalBalance: "8.5" },
+      ],
+      parseIssues: [{ currency: "USD", field: "total_balance" }],
+    });
+
+    const out = await deepseekProvider.fetch({ config: {} } as any);
+
+    expect(out.attempted).toBe(true);
+    expect(out.entries).toHaveLength(3);
+    expect(JSON.stringify(out.entries)).not.toContain("0.00");
+    expect(out.errors).toEqual([
+      { label: "DeepSeek USD", message: "total_balance returned an invalid decimal" },
+    ]);
+  });
+
+  it.each([
+    [true, "Available"],
+    [false, "Low balance"],
+  ])("maps empty balance responses into a semantic boolean (%s)", async (isAvailable, _text) => {
+    const { queryDeepSeekBalance } = await import("../src/lib/deepseek.js");
+    (queryDeepSeekBalance as any).mockResolvedValueOnce({
+      success: true,
+      isAvailable,
       balanceInfos: [],
+      parseIssues: [],
     });
 
     const out = await deepseekProvider.fetch({ config: {} } as any);
     expectAttemptedWithNoErrors(out);
     expect(visibleEntries(out.entries, "deepseek")).toEqual([
       {
-        kind: "value",
-        name: "DeepSeek",
+        kind: "boolean",
+        name: "deepseek-availability",
         group: "DeepSeek",
-        label: "Status:",
-        value: "Low balance",
+        semantic: {
+          metric: { kind: "named", name: "Availability" },
+          prominence: "primary",
+        },
+        value: isAvailable,
       },
     ]);
+    expect(out.entries[0]?.accounting.resultType).toBe("status");
   });
 
   it("maps errors into toast errors", async () => {

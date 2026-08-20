@@ -120,7 +120,7 @@ function formatCommandDetails(entry: QuotaToastEntry, rightWidth: number): strin
 function getCommandValue(entry: QuotaToastEntry): string | null {
   if (isValueEntry(entry)) return entry.value;
   if (isQuantityEntry(entry)) return formatAccountingQuantity(entry.quantity);
-  if (isBooleanEntry(entry)) return formatAccountingBoolean(entry.value);
+  if (isBooleanEntry(entry)) return formatAccountingBoolean(entry.value, entry.semantic);
   return null;
 }
 

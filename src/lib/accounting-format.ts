@@ -174,7 +174,10 @@ export function formatAccountingQuantity(quantity: AccountingQuantity): string {
   return `${amount} ${singular ? labels[0] : labels[1]}`;
 }
 
-export function formatAccountingBoolean(value: boolean): string {
+export function formatAccountingBoolean(value: boolean, semantic?: AccountingSemantic): string {
+  if (semantic?.metric.kind === "named" && semantic.metric.name === "Availability") {
+    return value ? "Available" : "Low balance";
+  }
   return value ? "Enabled" : "Disabled";
 }
 

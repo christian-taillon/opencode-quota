@@ -311,7 +311,12 @@ export function formatQuotaRows(params: {
     } else if (isQuantityEntry(entry)) {
       addValueEntry(name, entry.resetTimeIso, formatAccountingQuantity(entry.quantity), true);
     } else if (isBooleanEntry(entry)) {
-      addValueEntry(name, entry.resetTimeIso, formatAccountingBoolean(entry.value), true);
+      addValueEntry(
+        name,
+        entry.resetTimeIso,
+        formatAccountingBoolean(entry.value, entry.semantic),
+        true,
+      );
     } else if (isPercentEntry(entry)) {
       addPercentEntry(name, entry.resetTimeIso, entry.percentRemaining, entry.right);
       addBasisLine(entry);
