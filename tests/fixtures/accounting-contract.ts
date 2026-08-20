@@ -5,6 +5,21 @@ export const accountingContractResult = {
   attempted: true,
   entries: [
     {
+      kind: "quantity",
+      accounting: {
+        resultType: "balance",
+        acquisitionMethod: "remote_api",
+        ownership: "maintained",
+        authority: "provider_reported",
+      },
+      semantic: {
+        metric: { kind: "component", component: "current_balance" },
+        prominence: "supplementary",
+      },
+      name: "Balance",
+      quantity: { decimal: "10", unit: { kind: "currency", code: "USD" } },
+    },
+    {
       accounting: {
         resultType: "quota",
         acquisitionMethod: "remote_api",
@@ -12,8 +27,23 @@ export const accountingContractResult = {
         authority: "provider_reported",
         observedAtIso: "2026-07-11T00:00:00.000Z",
       },
+      semantic: { metric: { kind: "window", window: "month" }, prominence: "primary" },
+      basis: {
+        used: {
+          quantity: { decimal: "2500", unit: { kind: "count", unit: "token" } },
+          authority: "provider_reported",
+        },
+        limit: {
+          quantity: { decimal: "10000", unit: { kind: "count", unit: "token" } },
+          authority: "provider_reported",
+        },
+        remaining: {
+          quantity: { decimal: "7500", unit: { kind: "count", unit: "token" } },
+          authority: "provider_reported",
+        },
+      },
       name: "Quota",
-      label: "Monthly:",
+      label: "Not a window:",
       percentRemaining: 75,
       resetTimeIso: "2026-08-01T00:00:00.000Z",
     },
@@ -24,8 +54,9 @@ export const accountingContractResult = {
         ownership: "maintained",
         authority: "provider_reported",
       },
+      semantic: { metric: { kind: "window", window: "rpm" }, prominence: "primary" },
       name: "Rate limit",
-      label: "RPM:",
+      label: "Monthly:",
       percentRemaining: 50,
       resetTimeIso: "2026-07-11T00:01:00.000Z",
     },
@@ -58,30 +89,31 @@ export const accountingContractResult = {
         ownership: "maintained",
         authority: "provider_reported",
       },
+      semantic: { metric: { kind: "aggregate" }, prominence: "primary" },
+      basis: {
+        limit: {
+          quantity: { decimal: "100", unit: { kind: "currency", code: "USD" } },
+          authority: "user_configured",
+        },
+      },
       name: "Budget",
+      label: "Weekly:",
       percentRemaining: 60,
     },
     {
-      kind: "value",
+      kind: "boolean",
       accounting: {
-        resultType: "balance",
+        resultType: "status",
         acquisitionMethod: "remote_api",
         ownership: "maintained",
         authority: "provider_reported",
       },
-      name: "Balance",
-      value: "$10.00",
-    },
-    {
-      kind: "value",
-      accounting: {
-        resultType: "status",
-        acquisitionMethod: "local_cli",
-        ownership: "maintained",
-        authority: "provider_reported",
+      semantic: {
+        metric: { kind: "component", component: "auto_reload" },
+        prominence: "supplementary",
       },
-      name: "Status",
-      value: "Active",
+      name: "Auto-reload",
+      value: true,
     },
     {
       accounting: {
@@ -118,6 +150,15 @@ export const accountingContractExport = {
       status: "ok",
       fetchedAt: 1_783_727_940,
       entries: [
+        {
+          name: "Balance",
+          resultType: "balance",
+          acquisitionMethod: "remote_api",
+          ownership: "maintained",
+          authority: "provider_reported",
+          renderType: "value",
+          value: "USD 10.00",
+        },
         {
           name: "Quota",
           resultType: "quota",
@@ -169,22 +210,13 @@ export const accountingContractExport = {
           percentRemaining: 60,
         },
         {
-          name: "Balance",
-          resultType: "balance",
+          name: "Auto-reload",
+          resultType: "status",
           acquisitionMethod: "remote_api",
           ownership: "maintained",
           authority: "provider_reported",
           renderType: "value",
-          value: "$10.00",
-        },
-        {
-          name: "Status",
-          resultType: "status",
-          acquisitionMethod: "local_cli",
-          ownership: "maintained",
-          authority: "provider_reported",
-          renderType: "value",
-          value: "Active",
+          value: "Enabled",
         },
         {
           name: "Configured quota",

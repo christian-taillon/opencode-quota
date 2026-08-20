@@ -317,6 +317,98 @@ describe("quota reset notifications", () => {
     ).toEqual([]);
   });
 
+  it("limits structured reset observations to typed-window quota and rate-limit percentages", async () => {
+    const path = await statePath();
+    const start = Date.UTC(2026, 0, 1, 12);
+    const reset = start + 60 * 60 * 1000;
+    const accounting = {
+      resultType: "quota",
+      acquisitionMethod: "remote_api",
+      ownership: "maintained",
+      authority: "provider_reported",
+    } as const;
+
+    await observeQuotaResetNotifications({
+      providers: [
+        {
+          providerId: "openai",
+          result: {
+            attempted: true,
+            errors: [],
+            entries: [
+              {
+                kind: "quantity",
+                accounting: { ...accounting, resultType: "balance" },
+                semantic: {
+                  metric: { kind: "component", component: "current_balance" },
+                  prominence: "primary",
+                },
+                name: "Balance",
+                quantity: { decimal: "10", unit: { kind: "currency", code: "USD" } },
+                resetTimeIso: new Date(reset).toISOString(),
+              },
+              {
+                kind: "boolean",
+                accounting: { ...accounting, resultType: "status" },
+                semantic: {
+                  metric: { kind: "component", component: "auto_reload" },
+                  prominence: "supplementary",
+                },
+                name: "Auto-reload",
+                value: true,
+                resetTimeIso: new Date(reset).toISOString(),
+              },
+              {
+                accounting: { ...accounting, resultType: "budget" },
+                semantic: { metric: { kind: "window", window: "week" }, prominence: "primary" },
+                name: "Budget",
+                percentRemaining: 10,
+                resetTimeIso: new Date(reset).toISOString(),
+              },
+              {
+                accounting,
+                semantic: { metric: { kind: "aggregate" }, prominence: "primary" },
+                name: "Aggregate quota",
+                label: "Weekly:",
+                percentRemaining: 10,
+                resetTimeIso: new Date(reset).toISOString(),
+              },
+              {
+                accounting: { ...accounting, sourceId: "quota" },
+                semantic: { metric: { kind: "window", window: "week" }, prominence: "primary" },
+                name: "Typed quota",
+                label: "Monthly:",
+                percentRemaining: 10,
+                resetTimeIso: new Date(reset).toISOString(),
+              },
+              {
+                accounting: { ...accounting, resultType: "rate_limit", sourceId: "rate" },
+                semantic: { metric: { kind: "window", window: "week" }, prominence: "primary" },
+                name: "Typed rate limit",
+                label: "Monthly:",
+                percentRemaining: 20,
+                resetTimeIso: new Date(reset).toISOString(),
+              },
+              {
+                accounting: { ...accounting, sourceId: "monthly" },
+                semantic: { metric: { kind: "window", window: "month" }, prominence: "primary" },
+                name: "Typed monthly quota",
+                label: "Weekly:",
+                percentRemaining: 30,
+                resetTimeIso: new Date(reset).toISOString(),
+              },
+            ],
+          },
+        },
+      ],
+      windows: ["weekly"],
+      nowMs: start,
+      statePath: path,
+    });
+
+    expect(Object.keys(JSON.parse(await readFile(path, "utf8")).observations)).toHaveLength(2);
+  });
+
   it("filters window and accounting types", async () => {
     const path = await statePath();
     const start = Date.UTC(2026, 0, 1, 12);

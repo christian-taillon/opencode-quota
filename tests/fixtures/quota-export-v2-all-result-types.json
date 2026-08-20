@@ -9,6 +9,15 @@
       "fetchedAt": 1783727940,
       "entries": [
         {
+          "name": "Balance",
+          "resultType": "balance",
+          "acquisitionMethod": "remote_api",
+          "ownership": "maintained",
+          "authority": "provider_reported",
+          "renderType": "value",
+          "value": "USD 10.00"
+        },
+        {
           "name": "Quota",
           "resultType": "quota",
           "acquisitionMethod": "remote_api",
@@ -59,22 +68,13 @@
           "percentRemaining": 60
         },
         {
-          "name": "Balance",
-          "resultType": "balance",
+          "name": "Auto-reload",
+          "resultType": "status",
           "acquisitionMethod": "remote_api",
           "ownership": "maintained",
           "authority": "provider_reported",
           "renderType": "value",
-          "value": "$10.00"
-        },
-        {
-          "name": "Status",
-          "resultType": "status",
-          "acquisitionMethod": "local_cli",
-          "ownership": "maintained",
-          "authority": "provider_reported",
-          "renderType": "value",
-          "value": "Active"
+          "value": "Enabled"
         },
         {
           "name": "Configured quota",

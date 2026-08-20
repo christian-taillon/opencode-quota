@@ -72,6 +72,9 @@ function getStatePath(): string {
 }
 
 function getWindow(entry: QuotaToastEntry): QuotaWindowKind | null {
+  if (entry.semantic) {
+    return entry.semantic.metric.kind === "window" ? entry.semantic.metric.window : null;
+  }
   return classifyQuotaWindowText(entry.label ?? "") ?? classifyQuotaWindowText(entry.name);
 }
 

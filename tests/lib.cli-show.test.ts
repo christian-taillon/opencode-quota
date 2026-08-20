@@ -605,13 +605,25 @@ describe("runCliShowCommand", () => {
   it.each([
     [80, "50", 0],
     [30, "50", 1],
-  ])("--threshold exits %s when a provider is at %s%% remaining", async (percentRemaining, threshold, expectedCode) => {
+  ])("--threshold uses percentage rows even when the first row is a quantity: %s vs %s", async (percentRemaining, threshold, expectedCode) => {
     const provider = {
       id: "synthetic",
       isAvailable: vi.fn().mockResolvedValue(true),
       fetch: vi.fn().mockResolvedValue({
         attempted: true,
-        entries: [{ accounting: TEST_ACCOUNTING, name: "Synthetic", percentRemaining }],
+        entries: [
+          {
+            kind: "quantity",
+            accounting: { ...TEST_ACCOUNTING, resultType: "balance" },
+            semantic: {
+              metric: { kind: "component", component: "current_balance" },
+              prominence: "primary",
+            },
+            name: "Synthetic balance",
+            quantity: { decimal: "5", unit: { kind: "currency", code: "USD" } },
+          },
+          { accounting: TEST_ACCOUNTING, name: "Synthetic", percentRemaining },
+        ],
         errors: [],
       }),
     };

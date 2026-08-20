@@ -327,9 +327,11 @@ describe("buildQuotaExport", () => {
       timestamp: new Date("2026-07-10T23:59:00.000Z").getTime(),
     });
 
+    const ctx = createMockContext();
+    ctx.config.accountingDetail = "summary";
     const actual = await buildQuotaExport({
       providers: [createMockProvider("fixture")],
-      ctx: createMockContext(),
+      ctx,
       ttlMs: 60_000,
       fromCache: true,
     });
@@ -342,6 +344,35 @@ describe("buildQuotaExport", () => {
 
     expect(actual).toEqual(accountingContractExport);
     expect(actual).toEqual(golden);
+
+    const provider = actual.providers.fixture;
+    expect(provider.status).toBe("ok");
+    if (provider.status === "ok") {
+      expect(provider.entries[0]).toMatchObject({ renderType: "value", value: "USD 10.00" });
+      expect(provider.entries).toContainEqual(
+        expect.objectContaining({ name: "Auto-reload", renderType: "value", value: "Enabled" }),
+      );
+      const allowedKeys = new Set([
+        "name",
+        "resultType",
+        "acquisitionMethod",
+        "ownership",
+        "authority",
+        "sourceId",
+        "observedAt",
+        "window",
+        "resetAt",
+        "renderType",
+        "percentRemaining",
+        "value",
+      ]);
+      expect(
+        provider.entries.every((entry) => Object.keys(entry).every((key) => allowedKeys.has(key))),
+      ).toBe(true);
+      expect(JSON.stringify(provider.entries)).not.toMatch(
+        /"(?:semantic|prominence|basis|quantity)"/u,
+      );
+    }
   });
 
   it("omits invalid optional timestamps instead of exporting NaN", async () => {

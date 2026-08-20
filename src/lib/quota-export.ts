@@ -1,14 +1,16 @@
 import { homedir } from "os";
 import { join } from "path";
+import { formatAccountingBoolean, formatAccountingQuantity } from "./accounting-format.js";
 import { writeJsonAtomic } from "./atomic-json.js";
 import { sanitizeSingleLineDisplaySnippet } from "./display-sanitize.js";
 import type {
+  AccountingWindow,
   QuotaProvider,
   QuotaProviderContext,
   QuotaProviderResult,
   QuotaToastEntry,
 } from "./entries.js";
-import { isPercentEntry, isValueEntry } from "./entries.js";
+import { isBooleanEntry, isPercentEntry, isQuantityEntry, isValueEntry } from "./entries.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import type {
   QuotaExport,
@@ -26,6 +28,18 @@ import { readCachedProviderResult } from "./quota-state.js";
 
 /** Max length for an exported provider error message after sanitization. */
 const EXPORT_ERROR_MAX_LENGTH = 240;
+
+const EXPORT_WINDOW_LABELS: Readonly<Record<AccountingWindow, string>> = {
+  rpm: "RPM",
+  hour: "Hourly",
+  five_hour: "5h",
+  day: "Daily",
+  week: "Weekly",
+  month: "Monthly",
+  year: "Yearly",
+  mcp: "MCP",
+  code_review: "Code Review",
+};
 
 /**
  * Builds the provider context used to read cached quota for export.
@@ -96,11 +110,20 @@ function toExportRawDetail(detail: { key: string; value: string }): QuotaExportR
   };
 }
 
+function getExportWindow(entry: QuotaToastEntry): string | undefined {
+  if (entry.semantic) {
+    return entry.semantic.metric.kind === "window"
+      ? EXPORT_WINDOW_LABELS[entry.semantic.metric.window]
+      : undefined;
+  }
+
+  // Legacy entries derive the window only from the explicit row label. The
+  // entry name is human-readable display text and must not be parsed here.
+  return normalizeSingleWindowWindowLabel(entry.label) ?? undefined;
+}
+
 function toExportEntry(entry: QuotaToastEntry): QuotaExportEntry {
-  // Derive the window only from the explicit row label. The entry name is a
-  // human-readable display string (e.g. "Monthly Premium Requests") and must
-  // not be parsed as a machine-readable window.
-  const window = normalizeSingleWindowWindowLabel(entry.label) ?? undefined;
+  const window = getExportWindow(entry);
   const resetAt = unixSecondsFromIso(entry.resetTimeIso);
   const observedAt = unixSecondsFromIso(entry.accounting.observedAtIso);
   const base = {
@@ -115,11 +138,17 @@ function toExportEntry(entry: QuotaToastEntry): QuotaExportEntry {
     ...(resetAt !== undefined ? { resetAt } : {}),
   };
 
-  if (isValueEntry(entry)) return { ...base, renderType: "value", value: entry.value };
   if (isPercentEntry(entry)) {
     return { ...base, renderType: "percent", percentRemaining: entry.percentRemaining };
   }
-  throw new TypeError("Structured accounting export is not available in this phase");
+  if (isValueEntry(entry)) return { ...base, renderType: "value", value: entry.value };
+  if (isQuantityEntry(entry)) {
+    return { ...base, renderType: "value", value: formatAccountingQuantity(entry.quantity) };
+  }
+  if (isBooleanEntry(entry)) {
+    return { ...base, renderType: "value", value: formatAccountingBoolean(entry.value) };
+  }
+  return entry satisfies never;
 }
 
 function buildQuotaProviderStatuses(params: {

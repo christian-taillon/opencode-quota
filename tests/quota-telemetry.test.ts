@@ -236,6 +236,86 @@ describe("quota telemetry", () => {
     ]);
   });
 
+  it("keeps structured telemetry percent-only and uses typed semantic windows", async () => {
+    const otel = createOtelHarness();
+    __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
+    const token = enable({});
+
+    updateQuotaTelemetrySnapshot({
+      token,
+      snapshotId: "structured",
+      providerId: "openai",
+      result: quotaResult([
+        {
+          kind: "quantity",
+          accounting: { ...ACCOUNTING, resultType: "balance" },
+          semantic: {
+            metric: { kind: "component", component: "current_balance" },
+            prominence: "supplementary",
+          },
+          name: "Balance",
+          quantity: { decimal: "12.5", unit: { kind: "currency", code: "USD" } },
+        },
+        {
+          kind: "boolean",
+          accounting: { ...ACCOUNTING, resultType: "status" },
+          semantic: {
+            metric: { kind: "component", component: "auto_reload" },
+            prominence: "supplementary",
+          },
+          name: "Auto-reload",
+          value: true,
+        },
+        {
+          kind: "value",
+          accounting: { ...ACCOUNTING, resultType: "usage" },
+          name: "Legacy usage",
+          value: "12 requests",
+        },
+        {
+          accounting: ACCOUNTING,
+          semantic: { metric: { kind: "window", window: "week" }, prominence: "primary" },
+          basis: {
+            remaining: {
+              quantity: { decimal: "25", unit: { kind: "count", unit: "request" } },
+              authority: "provider_reported",
+            },
+          },
+          name: "Typed weekly quota",
+          label: "Monthly:",
+          percentRemaining: 25,
+        },
+        {
+          accounting: { ...ACCOUNTING, resultType: "budget" },
+          semantic: { metric: { kind: "aggregate" }, prominence: "primary" },
+          name: "Aggregate budget",
+          label: "Daily:",
+          percentRemaining: 80,
+        },
+      ]),
+    });
+    await __flushQuotaTelemetryInitializationForTests();
+
+    expect(otel.collect("opencode.quota.consumed")).toEqual([
+      {
+        value: 0.2,
+        attributes: {
+          "quota.provider": "openai",
+          "quota.window": "unknown",
+          "quota.result_type": "budget",
+        },
+      },
+      {
+        value: 0.75,
+        attributes: {
+          "quota.provider": "openai",
+          "quota.window": "week",
+          "quota.result_type": "quota",
+        },
+      },
+    ]);
+  });
+
   it("maps aggregate sources to custom and reduces privacy-collapsed series by maximum", async () => {
     const otel = createOtelHarness();
     __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
