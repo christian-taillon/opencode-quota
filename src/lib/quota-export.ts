@@ -12,6 +12,7 @@ import type {
 } from "./entries.js";
 import { isBooleanEntry, isPercentEntry, isQuantityEntry, isValueEntry } from "./entries.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
+import { classifyQuotaWindowText } from "./quota-entry-display.js";
 import type {
   QuotaExport,
   QuotaExportEntry,
@@ -21,7 +22,6 @@ import type {
   QuotaExportSource,
 } from "./quota-export-types.js";
 import { MAINTAINED_LOCAL_ESTIMATE_IDS } from "./quota-providers.js";
-import { normalizeSingleWindowWindowLabel } from "./quota-render-data.js";
 import type { QuotaRuntimeContext } from "./quota-runtime-context.js";
 import { createQuotaProviderRuntimeContext } from "./quota-runtime-context.js";
 import { readCachedProviderResult } from "./quota-state.js";
@@ -119,7 +119,8 @@ function getExportWindow(entry: QuotaToastEntry): string | undefined {
 
   // Legacy entries derive the window only from the explicit row label. The
   // entry name is human-readable display text and must not be parsed here.
-  return normalizeSingleWindowWindowLabel(entry.label) ?? undefined;
+  const windowKind = classifyQuotaWindowText(entry.label ?? "");
+  return windowKind ? EXPORT_WINDOW_LABELS[windowKind] : undefined;
 }
 
 function toExportEntry(entry: QuotaToastEntry): QuotaExportEntry {
