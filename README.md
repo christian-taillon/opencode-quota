@@ -89,6 +89,7 @@ More ways to use it:
 - Tune reset countdown precision without changing the default compact display
 - Get a popup when quota becomes available again for the windows you choose via [`resetNotifications`](docs/readme/configuration.md#notify-when-quota-becomes-available-again)
 - Add a quota bar below the TUI prompt via [`tuiPromptBar.enabled`](docs/readme/configuration.md#tui-settings)
+- Prefer OpenCode Go's Five-hour, Weekly, or Monthly window in the collapsed sidebar without hiding expanded rows
 - Choose summary or detailed provider-neutral accounting with [`accountingDetail`](docs/readme/configuration.md#show-accounting-detail)
 - Choose current-session or descendant-tree token totals across `/quota`, toasts, the sidebar, and the compact input line
 - Diagnose authentication, quota sources, pricing, and maintainer notices

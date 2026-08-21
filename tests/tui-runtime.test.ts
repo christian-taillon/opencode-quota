@@ -2389,6 +2389,218 @@ describe("tui runtime helpers", () => {
     );
   });
 
+  it("applies the OpenCode Go preference only to collapsed sidebar data", async () => {
+    writeFileSync(
+      join(worktreeDir, "opencode.json"),
+      JSON.stringify({
+        experimental: {
+          quotaToast: {
+            enabled: true,
+            formatStyle: "singleWindow",
+            tuiSidebarPanel: {
+              enabled: true,
+              formatStyle: "allWindows",
+              opencodeGoPreferredWindow: "rolling",
+            },
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const accounting = {
+      resultType: "quota",
+      acquisitionMethod: "remote_api",
+      ownership: "maintained",
+      authority: "provider_reported",
+    } as const;
+    const openCodeGoResult = {
+      attempted: true,
+      errors: [],
+      entries: [
+        {
+          accounting,
+          name: "OpenCode Go Five-hour",
+          group: "OpenCode Go",
+          percentRemaining: 98,
+          semantic: { metric: { kind: "window", window: "five_hour" }, prominence: "primary" },
+        },
+        {
+          accounting,
+          name: "OpenCode Go Monthly",
+          group: "OpenCode Go",
+          percentRemaining: 33,
+          semantic: { metric: { kind: "window", window: "month" }, prominence: "primary" },
+        },
+      ],
+    } as const;
+    const otherResult = {
+      attempted: true,
+      errors: [],
+      entries: [
+        {
+          accounting,
+          name: "Other Weekly",
+          group: "Other",
+          percentRemaining: 80,
+          semantic: { metric: { kind: "window", window: "week" }, prominence: "primary" },
+        },
+        {
+          accounting,
+          name: "Other Monthly",
+          group: "Other",
+          percentRemaining: 10,
+          semantic: { metric: { kind: "window", window: "month" }, prominence: "primary" },
+        },
+      ],
+    } as const;
+    const singleWindowData = {
+      entries: [openCodeGoResult.entries[1], otherResult.entries[1]],
+      errors: [],
+      sessionTokens: undefined,
+    };
+    const allWindowsData = {
+      entries: [...openCodeGoResult.entries, ...otherResult.entries],
+      errors: [],
+      sessionTokens: undefined,
+    };
+    collectQuotaRenderData.mockResolvedValue({
+      active: [{ id: "opencode-go" }, { id: "other" }],
+      data: singleWindowData,
+      allWindowsData,
+      providerResults: [
+        { providerId: "opencode-go", result: openCodeGoResult },
+        { providerId: "other", result: otherResult },
+      ],
+    });
+    buildCompactQuotaStatusLine.mockReturnValue("OpenCode Go 98% | Other 10%");
+    buildSidebarQuotaPanelLines.mockReturnValue(["all configured windows"]);
+
+    const panel = await loadSidebarPanel({
+      api: {
+        state: {
+          provider: [],
+          path: { worktree: worktreeDir, directory: nestedDir },
+          session: { messages: () => [] },
+        },
+        client: {},
+      } as any,
+      sessionID: "session-opencode-go-preference",
+    });
+
+    expect(panel).toEqual({
+      status: "ready",
+      lines: ["OpenCode Go 98% | Other 10%"],
+      linesExpanded: ["all configured windows"],
+      providerCount: 2,
+    });
+    expect(buildCompactQuotaStatusLine).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          entries: expect.arrayContaining([
+            expect.objectContaining({
+              semantic: { metric: { kind: "window", window: "five_hour" }, prominence: "primary" },
+            }),
+            expect.objectContaining({
+              semantic: { metric: { kind: "window", window: "month" }, prominence: "primary" },
+            }),
+          ]),
+        }),
+      }),
+    );
+    expect(buildSidebarQuotaPanelLines).toHaveBeenCalledWith({
+      data: allWindowsData,
+      config: expect.objectContaining({ formatStyle: "allWindows" }),
+    });
+  });
+
+  it.each([
+    { name: "inherited default singleWindow", sidebarFormatStyle: undefined },
+    { name: "explicit sidebar singleWindow", sidebarFormatStyle: "singleWindow" as const },
+  ])("applies the OpenCode Go preference for $name", async ({ sidebarFormatStyle }) => {
+    writeFileSync(
+      join(worktreeDir, "opencode.json"),
+      JSON.stringify({
+        experimental: {
+          quotaToast: {
+            enabled: true,
+            tuiSidebarPanel: {
+              enabled: true,
+              formatStyle: sidebarFormatStyle,
+              opencodeGoPreferredWindow: "rolling",
+            },
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const accounting = {
+      resultType: "quota",
+      acquisitionMethod: "remote_api",
+      ownership: "maintained",
+      authority: "provider_reported",
+    } as const;
+    const openCodeGoResult = {
+      attempted: true,
+      errors: [],
+      entries: [
+        {
+          accounting,
+          name: "OpenCode Go Five-hour",
+          group: "OpenCode Go",
+          percentRemaining: 98,
+          semantic: { metric: { kind: "window", window: "five_hour" }, prominence: "primary" },
+        },
+        {
+          accounting,
+          name: "OpenCode Go Monthly",
+          group: "OpenCode Go",
+          percentRemaining: 33,
+          semantic: { metric: { kind: "window", window: "month" }, prominence: "primary" },
+        },
+      ],
+    } as const;
+    const singleWindowData = {
+      entries: [openCodeGoResult.entries[1]],
+      errors: [],
+      sessionTokens: undefined,
+    };
+    collectQuotaRenderData.mockResolvedValue({
+      active: [{ id: "opencode-go" }],
+      data: singleWindowData,
+      singleWindowData,
+      providerResults: [{ providerId: "opencode-go", result: openCodeGoResult }],
+    });
+    buildSidebarQuotaPanelLines.mockReturnValue(["preferred rolling window"]);
+
+    const panel = await loadSidebarPanel({
+      api: {
+        state: {
+          provider: [],
+          path: { worktree: worktreeDir, directory: nestedDir },
+          session: { messages: () => [] },
+        },
+        client: {},
+      } as any,
+      sessionID: `session-opencode-go-${sidebarFormatStyle ?? "inherited"}`,
+    });
+
+    expect(panel).toEqual({
+      status: "ready",
+      lines: ["preferred rolling window"],
+      providerCount: 1,
+    });
+    expect(buildSidebarQuotaPanelLines).toHaveBeenCalledTimes(1);
+    const collapsedCall = buildSidebarQuotaPanelLines.mock.calls[0]?.[0];
+    expect(collapsedCall?.config).toEqual(expect.objectContaining({ formatStyle: "singleWindow" }));
+    expect(
+      collapsedCall?.data.entries.map((entry: (typeof openCodeGoResult.entries)[number]) =>
+        entry.semantic.metric.kind === "window" ? entry.semantic.metric.window : undefined,
+      ),
+    ).toEqual(["five_hour"]);
+  });
+
   it("uses tuiCompactStatus.formatStyle override instead of root formatStyle for compact", async () => {
     writeFileSync(
       join(worktreeDir, "opencode.json"),

@@ -125,6 +125,76 @@ describe("projectQuotaProviderResults", () => {
     ]);
   });
 
+  it("prefers a configured window for one result and preserves fallback and other results", () => {
+    const openCodeGo = result([
+      {
+        accounting: TEST_ACCOUNTING,
+        name: "OpenCode Go Five-hour",
+        group: "OpenCode Go",
+        percentRemaining: 98,
+        semantic: { metric: { kind: "window", window: "five_hour" }, prominence: "primary" },
+      },
+      {
+        accounting: TEST_ACCOUNTING,
+        name: "OpenCode Go Weekly",
+        group: "OpenCode Go",
+        percentRemaining: 53,
+        semantic: { metric: { kind: "window", window: "week" }, prominence: "primary" },
+      },
+      {
+        accounting: TEST_ACCOUNTING,
+        name: "OpenCode Go Monthly",
+        group: "OpenCode Go",
+        percentRemaining: 33,
+        semantic: { metric: { kind: "window", window: "month" }, prominence: "primary" },
+      },
+    ]);
+    const other = result([
+      {
+        accounting: TEST_ACCOUNTING,
+        name: "Other Weekly",
+        group: "Other",
+        percentRemaining: 80,
+        semantic: { metric: { kind: "window", window: "week" }, prominence: "primary" },
+      },
+      {
+        accounting: TEST_ACCOUNTING,
+        name: "Other Monthly",
+        group: "Other",
+        percentRemaining: 10,
+        semantic: { metric: { kind: "window", window: "month" }, prominence: "primary" },
+      },
+    ]);
+
+    const preferred = projectQuotaProviderResults([openCodeGo, other], "singleWindow", "summary", {
+      preferredWindowsByResultIndex: new Map([[0, "five_hour"]]),
+    });
+    expect(
+      preferred.map((entry) => ({
+        group: entry.name,
+        window: entry.semantic?.metric.kind === "window" ? entry.semantic.metric.window : null,
+      })),
+    ).toEqual([
+      { group: "[OpenCode Go] 5h", window: "five_hour" },
+      { group: "[Other] Monthly", window: "month" },
+    ]);
+
+    const unavailable = projectQuotaProviderResults([openCodeGo], "singleWindow", "summary", {
+      preferredWindowsByResultIndex: new Map([[0, "year"]]),
+    });
+    expect(unavailable[0]?.semantic?.metric).toEqual({ kind: "window", window: "month" });
+
+    expect(
+      projectQuotaProviderResults([openCodeGo], "allWindows", "summary", {
+        preferredWindowsByResultIndex: new Map([[0, "five_hour"]]),
+      }).map((entry) => entry.semantic?.metric),
+    ).toEqual([
+      { kind: "window", window: "five_hour" },
+      { kind: "window", window: "week" },
+      { kind: "window", window: "month" },
+    ]);
+  });
+
   it("sorts only contiguous semantic runs and leaves legacy anchors fixed", () => {
     const entries: QuotaToastEntry[] = [
       {

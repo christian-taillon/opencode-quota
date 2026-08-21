@@ -1,5 +1,6 @@
 import { compareAccountingSemanticEntries } from "./accounting-format.js";
 import type {
+  AccountingWindow,
   QuotaPercentEntry,
   QuotaProviderPresentation,
   QuotaProviderResult,
@@ -116,10 +117,33 @@ function normalizeSingleWindowPresentation(
   };
 }
 
-function selectSingleWindowEntry(entries: QuotaToastEntry[]): QuotaToastEntry | undefined {
+function entryMatchesPreferredWindow(
+  entry: QuotaToastEntry,
+  preferredWindow: AccountingWindow,
+): boolean {
+  if (!isPercentEntry(entry)) {
+    return false;
+  }
+  if (entry.semantic?.metric.kind === "window") {
+    return entry.semantic.metric.window === preferredWindow;
+  }
+  return (
+    classifyQuotaWindowText(entry.label ?? "") === preferredWindow ||
+    classifyQuotaWindowText(entry.name) === preferredWindow
+  );
+}
+
+function selectSingleWindowEntry(
+  entries: QuotaToastEntry[],
+  preferredWindow?: AccountingWindow,
+): QuotaToastEntry | undefined {
+  const preferredEntries = preferredWindow
+    ? entries.filter((entry) => entryMatchesPreferredWindow(entry, preferredWindow))
+    : [];
+  const candidates = preferredEntries.length > 0 ? preferredEntries : entries;
   let selectedPercentEntry: Extract<QuotaToastEntry, { percentRemaining: number }> | undefined;
 
-  for (const entry of entries) {
+  for (const entry of candidates) {
     if (!isPercentEntry(entry)) {
       continue;
     }
@@ -129,12 +153,15 @@ function selectSingleWindowEntry(entries: QuotaToastEntry[]): QuotaToastEntry | 
     }
   }
 
-  return selectedPercentEntry ?? entries[0];
+  return selectedPercentEntry ?? candidates[0];
 }
 
-function selectSingleWindowEntries(entries: QuotaToastEntry[]): QuotaToastEntry[] {
+function selectSingleWindowEntries(
+  entries: QuotaToastEntry[],
+  preferredWindow?: AccountingWindow,
+): QuotaToastEntry[] {
   if (!entries.some((entry) => entry.accounting.sourceId !== undefined)) {
-    const selected = selectSingleWindowEntry(entries);
+    const selected = selectSingleWindowEntry(entries, preferredWindow);
     return selected ? [selected] : [];
   }
 
@@ -146,7 +173,7 @@ function selectSingleWindowEntries(entries: QuotaToastEntry[]): QuotaToastEntry[
   }
 
   return [...entriesBySource.values()].flatMap((sourceEntries) => {
-    const selected = selectSingleWindowEntry(sourceEntries);
+    const selected = selectSingleWindowEntry(sourceEntries, preferredWindow);
     return selected ? [selected] : [];
   });
 }
@@ -192,7 +219,10 @@ function isSemanticWindowPercentEntry(entry: QuotaToastEntry): entry is QuotaPer
   return isPercentEntry(entry) && entry.semantic?.metric.kind === "window";
 }
 
-function selectSemanticSingleWindowEntries(entries: IndexedQuotaEntry[]): IndexedQuotaEntry[] {
+function selectSemanticSingleWindowEntries(
+  entries: IndexedQuotaEntry[],
+  preferredWindow?: AccountingWindow,
+): IndexedQuotaEntry[] {
   const partitions = new Map<
     string | undefined,
     Map<QuotaToastEntry["accounting"]["resultType"], IndexedPercentEntry[]>
@@ -221,7 +251,15 @@ function selectSemanticSingleWindowEntries(entries: IndexedQuotaEntry[]): Indexe
   const selectedIndexes = new Set<number>();
   for (const byResultType of partitions.values()) {
     for (const partition of byResultType.values()) {
-      const [first, ...remaining] = partition;
+      const preferredPartition = preferredWindow
+        ? partition.filter(
+            ({ entry }) =>
+              entry.semantic?.metric.kind === "window" &&
+              entry.semantic.metric.window === preferredWindow,
+          )
+        : [];
+      const candidates = preferredPartition.length > 0 ? preferredPartition : partition;
+      const [first, ...remaining] = candidates;
       if (!first) continue;
 
       let selected = first;
@@ -270,6 +308,7 @@ function projectProviderResultToStyle(
   result: QuotaProviderResult,
   style: QuotaFormatStyle,
   accountingDetail: QuotaToastConfig["accountingDetail"],
+  preferredWindow?: AccountingWindow,
 ): QuotaToastEntry[] {
   const presentation = normalizeSingleWindowPresentation(result.presentation);
   const entries = result.entries
@@ -295,16 +334,22 @@ function projectProviderResultToStyle(
     const selectedEntries =
       presentation?.classicStrategy === "preserve"
         ? legacyEntries
-        : selectSingleWindowEntries(legacyEntries);
+        : selectSingleWindowEntries(legacyEntries, preferredWindow);
     return selectedEntries.map((entry) => projectSingleWindowEntry(entry, presentation));
   }
 
-  const selectedSemanticEntries = selectSemanticSingleWindowEntries(semanticEntries);
+  const selectedSemanticEntries = selectSemanticSingleWindowEntries(
+    semanticEntries,
+    preferredWindow,
+  );
   const legacyEntries = entries.filter(({ entry }) => !entry.semantic);
   const selectedLegacyEntrySet = new Set(
     presentation?.classicStrategy === "preserve"
       ? legacyEntries.map(({ entry }) => entry)
-      : selectSingleWindowEntries(legacyEntries.map(({ entry }) => entry)),
+      : selectSingleWindowEntries(
+          legacyEntries.map(({ entry }) => entry),
+          preferredWindow,
+        ),
   );
   const selectedLegacyEntries = legacyEntries.filter(({ entry }) =>
     selectedLegacyEntrySet.has(entry),
@@ -322,6 +367,16 @@ export function projectQuotaProviderResults(
   results: QuotaProviderResult[],
   style: QuotaFormatStyle,
   accountingDetail: QuotaToastConfig["accountingDetail"],
+  options?: {
+    preferredWindowsByResultIndex?: ReadonlyMap<number, AccountingWindow>;
+  },
 ): QuotaToastEntry[] {
-  return results.flatMap((result) => projectProviderResultToStyle(result, style, accountingDetail));
+  return results.flatMap((result, index) =>
+    projectProviderResultToStyle(
+      result,
+      style,
+      accountingDetail,
+      options?.preferredWindowsByResultIndex?.get(index),
+    ),
+  );
 }

@@ -6,7 +6,13 @@ import {
 } from "./accounting-format.js";
 import { type RuntimeContextRootHints, resolveRuntimeContextRoots } from "./config-file-utils.js";
 import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
-import { isBooleanEntry, isPercentEntry, isQuantityEntry, isValueEntry } from "./entries.js";
+import {
+  type AccountingWindow,
+  isBooleanEntry,
+  isPercentEntry,
+  isQuantityEntry,
+  isValueEntry,
+} from "./entries.js";
 import { formatDisplayedPercentLabel } from "./format-utils.js";
 import { formatGroupedHeader } from "./grouped-header-format.js";
 import {
@@ -17,6 +23,7 @@ import {
   type MaintainerAnnouncement,
 } from "./maintainer-announcements.js";
 import { getQuotaProviderShape, normalizeQuotaProviderId } from "./provider-metadata.js";
+import { projectQuotaProviderResults } from "./quota-accounting-projection.js";
 import { classifyQuotaWindowText } from "./quota-entry-display.js";
 import {
   buildQuotaExport,
@@ -47,7 +54,7 @@ import type {
   SidebarPanelState,
 } from "./tui-panel-state.js";
 import { buildSidebarQuotaPanelLines, TUI_SIDEBAR_MAX_WIDTH } from "./tui-sidebar-format.js";
-import type { TuiCommandDisplay } from "./types.js";
+import type { OpenCodeGoWindowKey, TuiCommandDisplay } from "./types.js";
 
 const COMPACT_UNAVAILABLE_TEXT = "Quota unavailable";
 const PROMPT_BAR_MAX_WIDTH = 50;
@@ -317,6 +324,12 @@ function buildCompactStatusFromData(params: {
   };
 }
 
+const OPENCODE_GO_ACCOUNTING_WINDOWS: Readonly<Record<OpenCodeGoWindowKey, AccountingWindow>> = {
+  rolling: "five_hour",
+  weekly: "week",
+  monthly: "month",
+};
+
 function buildSidebarPanelFromData(params: {
   runtime: QuotaRuntimeContext;
   result: CollectQuotaRenderDataResult;
@@ -331,13 +344,29 @@ function buildSidebarPanelFromData(params: {
 
   const hasExpandedDetail =
     params.formatStyle === "allWindows" && Boolean(params.result.allWindowsData);
-  const compactData = params.result.singleWindowData ?? params.result.data;
-  const primaryData =
-    params.formatStyle === "allWindows" && params.result.allWindowsData
-      ? compactData
-      : params.formatStyle === "singleWindow" && params.result.singleWindowData !== undefined
-        ? params.result.singleWindowData
-        : params.result.data;
+  const baseCompactData = params.result.singleWindowData ?? params.result.data;
+  const preferredWindowKey = params.runtime.config.tuiSidebarPanel.opencodeGoPreferredWindow;
+  const providerResults = params.result.providerResults ?? [];
+  const openCodeGoResultIndex = providerResults.findIndex(
+    ({ providerId }) => providerId === "opencode-go",
+  );
+  const compactData =
+    baseCompactData && preferredWindowKey && openCodeGoResultIndex >= 0
+      ? {
+          ...baseCompactData,
+          entries: projectQuotaProviderResults(
+            providerResults.map(({ result }) => result),
+            "singleWindow",
+            params.runtime.config.accountingDetail,
+            {
+              preferredWindowsByResultIndex: new Map([
+                [openCodeGoResultIndex, OPENCODE_GO_ACCOUNTING_WINDOWS[preferredWindowKey]],
+              ]),
+            },
+          ),
+        }
+      : baseCompactData;
+  const primaryData = compactData;
   const primaryFormatStyle =
     params.formatStyle === "allWindows" && params.result.allWindowsData
       ? "singleWindow"

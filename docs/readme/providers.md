@@ -586,7 +586,7 @@ OpenCode Go reads subscription quota from the official `https://opencode.ai/zen/
 2. Trusted user/global OpenCode config: `provider.opencode.options.apiKey`
 3. An `opencode-go` API-key entry in OpenCode `auth.json`: `{ "type": "api", "key": "..." }`. This is the key the OpenCode CLI writes via `opencode auth login -p opencode-go`. A legacy `opencode` entry is still accepted as a fallback.
 
-Project-local `opencode.json` and `opencode.jsonc` files are not read for this secret. Use `opencodeGoWindows` to choose which validated API results appear: **5h** (`rolling`), **Weekly** (`weekly`), and/or **Monthly** (`monthly`). This setting filters display rows only; it does not change authentication or the API request.
+Project-local `opencode.json` and `opencode.jsonc` files are not read for this secret. Use `opencodeGoWindows` to choose which validated API results appear across surfaces and in the expanded sidebar: **Five-hour**, **Weekly**, and/or **Monthly**. To keep those rows expanded but prefer one while the sidebar is collapsed, set `tuiSidebarPanel.opencodeGoPreferredWindow` to `rolling`, `weekly`, or `monthly`; an unset or unavailable preference keeps the lowest-remaining selection. These settings do not change authentication or the API request.
 
 <a id="opencode-zen"></a>
 
