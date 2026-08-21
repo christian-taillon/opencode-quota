@@ -73,6 +73,7 @@ const mocks = vi.hoisted(() => ({
   reconcileDetectedProvidersInGlobalConfig: vi.fn(),
   observeQuotaResetNotifications: vi.fn(),
   formatQuotaResetNotification: vi.fn(),
+  disposeQuotaTelemetryOwner: vi.fn(),
 }));
 
 vi.mock("@opencode-ai/plugin", () => createPluginToolMockModule());
@@ -108,6 +109,11 @@ vi.mock("../src/lib/opencode-config-providers.js", () => ({
 vi.mock("../src/lib/quota-reset-notifications.js", () => ({
   observeQuotaResetNotifications: mocks.observeQuotaResetNotifications,
   formatQuotaResetNotification: mocks.formatQuotaResetNotification,
+}));
+
+vi.mock("../src/lib/quota-telemetry.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/quota-telemetry.js")>()),
+  disposeQuotaTelemetryOwner: mocks.disposeQuotaTelemetryOwner,
 }));
 
 describe("/quota command behavior", () => {
@@ -774,6 +780,502 @@ describe("/quota command behavior", () => {
     expect(provider.fetch).toHaveBeenCalledTimes(2);
     expect(client.tui.showToast).toHaveBeenCalledTimes(2);
     expect(getToastMessage(client, 1)).toContain("66% left");
+  });
+
+  it("uses the complete deferred retry backoff and saturates at five minutes", async () => {
+    vi.useFakeTimers();
+    try {
+      const loadedConfig = {
+        ...DEFAULT_CONFIG,
+        enabled: true,
+        enabledProviders: ["openai"] as string[],
+        showOnIdle: true,
+        showOnCompact: true,
+        showOnQuestion: false,
+        showSessionTokens: false,
+        minIntervalMs: 60_000,
+      };
+      mocks.loadConfig.mockResolvedValueOnce(loadedConfig);
+      const provider = {
+        id: "openai",
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch: vi.fn().mockRejectedValue(new Error("still warming up")),
+      };
+      mocks.getProviders.mockReturnValue([provider]);
+
+      const { QuotaToastPlugin } = await import("../src/plugin.js");
+      const client = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
+      const hooks = await QuotaToastPlugin({ client } as any);
+      const event = {
+        event: {
+          type: "session.idle",
+          properties: { sessionID: "session-backoff" },
+        },
+      } as any;
+
+      await hooks.event?.(event);
+      expect(provider.fetch).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(provider.fetch).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(provider.fetch).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(provider.fetch).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(provider.fetch).toHaveBeenCalledTimes(3);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(provider.fetch).toHaveBeenCalledTimes(4);
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(provider.fetch).toHaveBeenCalledTimes(5);
+
+      const scheduledDelays = client.app.log.mock.calls
+        .filter((call) => call[0]?.body?.message === "Deferred quota refresh scheduled")
+        .map((call) => call[0]?.body?.extra?.delayMs);
+      expect(scheduledDelays).toEqual([3_000, 15_000, 60_000, 300_000, 300_000]);
+      expect(client.tui.showToast).toHaveBeenCalledTimes(1);
+
+      loadedConfig.enabled = false;
+      await hooks.event?.(event);
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(provider.fetch).toHaveBeenCalledTimes(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries config_load_failed and no_reportable_data with their current reasons", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.loadConfig.mockRejectedValue(new Error("config unavailable"));
+      const provider = {
+        id: "openai",
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch: vi.fn().mockResolvedValue({
+          attempted: false,
+          entries: [],
+          errors: [],
+        }),
+      };
+      mocks.getProviders.mockReturnValue([provider]);
+
+      const { QuotaToastPlugin } = await import("../src/plugin.js");
+      const client = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
+      const hooks = await QuotaToastPlugin({ client } as any);
+      const event = {
+        event: {
+          type: "session.idle",
+          properties: { sessionID: "session-retry-reasons" },
+        },
+      } as any;
+
+      await hooks.event?.(event);
+      expect(provider.fetch).not.toHaveBeenCalled();
+      expect(client.app.log).toHaveBeenCalledWith({
+        body: expect.objectContaining({
+          message: "Deferred quota refresh scheduled",
+          extra: expect.objectContaining({ reason: "config_load_failed" }),
+        }),
+      });
+
+      const loadedConfig = {
+        ...DEFAULT_CONFIG,
+        enabled: true,
+        enabledProviders: "auto" as const,
+        showOnIdle: true,
+        showOnQuestion: false,
+        showSessionTokens: false,
+      };
+      mocks.loadConfig.mockResolvedValue(loadedConfig);
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      expect(provider.fetch).toHaveBeenCalledTimes(1);
+      expect(client.app.log).toHaveBeenCalledWith({
+        body: expect.objectContaining({
+          message: "Deferred quota refresh scheduled",
+          extra: expect.objectContaining({ reason: "no_reportable_data", delayMs: 15_000 }),
+        }),
+      });
+
+      loadedConfig.enabled = false;
+      await hooks.event?.(event);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(provider.fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears a pending retry when the loaded config becomes disabled", async () => {
+    vi.useFakeTimers();
+    try {
+      const loadedConfig = {
+        ...DEFAULT_CONFIG,
+        enabled: true,
+        enabledProviders: ["openai"] as string[],
+        showOnIdle: true,
+        showOnCompact: true,
+        showOnQuestion: false,
+        showSessionTokens: false,
+      };
+      mocks.loadConfig.mockResolvedValueOnce(loadedConfig);
+      const provider = {
+        id: "openai",
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch: vi.fn().mockRejectedValue(new Error("temporary failure")),
+      };
+      mocks.getProviders.mockReturnValue([provider]);
+
+      const { QuotaToastPlugin } = await import("../src/plugin.js");
+      const client = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
+      const hooks = await QuotaToastPlugin({ client } as any);
+      const idle = {
+        event: { type: "session.idle", properties: { sessionID: "session-disabled" } },
+      } as any;
+
+      await hooks.event?.(idle);
+      expect(provider.fetch).toHaveBeenCalledTimes(1);
+      expect(client.tui.showToast).toHaveBeenCalledTimes(1);
+
+      loadedConfig.enabled = false;
+      await hooks.event?.({
+        event: {
+          type: "session.compacted",
+          properties: { sessionID: "session-disabled" },
+        },
+      } as any);
+      await vi.advanceTimersByTimeAsync(300_000);
+
+      expect(provider.fetch).toHaveBeenCalledTimes(1);
+      expect(client.tui.showToast).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps collection and reconciliation ahead of the enableToast false emission gate", async () => {
+    mocks.loadConfig.mockResolvedValueOnce({
+      ...DEFAULT_CONFIG,
+      enabled: true,
+      enableToast: false,
+      enabledProviders: "auto",
+      showOnIdle: true,
+      showOnQuestion: false,
+      showSessionTokens: false,
+      resetNotifications: { enabled: true, windows: ["weekly"] },
+    });
+    const provider = {
+      id: "openai",
+      isAvailable: vi.fn().mockResolvedValue(true),
+      fetch: vi.fn().mockResolvedValue({
+        attempted: true,
+        entries: [{ accounting: TEST_ACCOUNTING, name: "OpenAI Pro", percentRemaining: 71 }],
+        errors: [],
+      }),
+    };
+    mocks.getProviders.mockReturnValue([provider]);
+
+    const { QuotaToastPlugin } = await import("../src/plugin.js");
+    const client = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
+    const hooks = await QuotaToastPlugin({ client, directory: process.cwd() } as any);
+
+    await hooks.event?.({
+      event: { type: "session.idle", properties: { sessionID: "session-late-gate" } },
+    } as any);
+
+    expect(mocks.loadConfig).toHaveBeenCalled();
+    expect(provider.isAvailable).toHaveBeenCalledOnce();
+    expect(provider.fetch).toHaveBeenCalledOnce();
+    expect(mocks.reconcileDetectedProvidersInGlobalConfig).toHaveBeenCalledWith({
+      configRootDir: process.cwd(),
+      detectedProviderIds: ["openai"],
+    });
+    expect(mocks.observeQuotaResetNotifications).not.toHaveBeenCalled();
+    expect(client.tui.showToast).not.toHaveBeenCalled();
+  });
+
+  it("keeps deferred retry state local to each plugin instance", async () => {
+    vi.useFakeTimers();
+    try {
+      const configA = {
+        ...DEFAULT_CONFIG,
+        enabled: true,
+        enabledProviders: ["openai"] as string[],
+        showOnIdle: true,
+        showOnQuestion: false,
+        showSessionTokens: false,
+      };
+      mocks.loadConfig.mockResolvedValueOnce(configA);
+      const providerA = {
+        id: "openai",
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch: vi
+          .fn()
+          .mockRejectedValueOnce(new Error("instance A warming up"))
+          .mockResolvedValueOnce({
+            attempted: true,
+            entries: [{ accounting: TEST_ACCOUNTING, name: "Instance A", percentRemaining: 64 }],
+            errors: [],
+          }),
+      };
+      mocks.getProviders.mockReturnValue([providerA]);
+
+      const { QuotaToastPlugin } = await import("../src/plugin.js");
+      const clientA = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
+      const hooksA = await QuotaToastPlugin({ client: clientA } as any);
+      const event = {
+        event: { type: "session.idle", properties: { sessionID: "session-shared" } },
+      } as any;
+      await hooksA.event?.(event);
+
+      const configB = { ...configA };
+      mocks.loadConfig.mockResolvedValueOnce(configB);
+      const providerB = {
+        id: "openai",
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch: vi.fn().mockResolvedValue({
+          attempted: true,
+          entries: [{ accounting: TEST_ACCOUNTING, name: "Instance B", percentRemaining: 82 }],
+          errors: [],
+        }),
+      };
+      mocks.getProviders.mockReturnValue([providerB]);
+      const clientB = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
+      const hooksB = await QuotaToastPlugin({ client: clientB } as any);
+      await hooksB.event?.(event);
+
+      expect(providerA.fetch).toHaveBeenCalledTimes(1);
+      expect(providerB.fetch).toHaveBeenCalledTimes(1);
+      expect(getToastMessage(clientB)).toContain("Instance B");
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(providerA.fetch).toHaveBeenCalledTimes(2);
+      expect(providerB.fetch).toHaveBeenCalledTimes(1);
+      expect(getToastMessage(clientA, 1)).toContain("Instance A");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("suppresses duplicate lifecycle work while a deferred retry is in flight", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveRetry: ((value: any) => void) | undefined;
+      mocks.loadConfig.mockResolvedValueOnce({
+        ...DEFAULT_CONFIG,
+        enabled: true,
+        enabledProviders: ["openai"],
+        showOnIdle: true,
+        showOnCompact: true,
+        showOnQuestion: false,
+        showSessionTokens: false,
+      });
+      const provider = {
+        id: "openai",
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch: vi
+          .fn()
+          .mockRejectedValueOnce(new Error("warming up"))
+          .mockImplementationOnce(
+            () =>
+              new Promise((resolve) => {
+                resolveRetry = resolve;
+              }),
+          ),
+      };
+      mocks.getProviders.mockReturnValue([provider]);
+
+      const { QuotaToastPlugin } = await import("../src/plugin.js");
+      const client = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
+      const hooks = await QuotaToastPlugin({ client } as any);
+      const sessionID = "session-in-flight";
+      await hooks.event?.({
+        event: { type: "session.idle", properties: { sessionID } },
+      } as any);
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      await vi.waitFor(() => expect(provider.fetch).toHaveBeenCalledTimes(2));
+      await hooks.event?.({
+        event: { type: "session.compacted", properties: { sessionID } },
+      } as any);
+      expect(provider.fetch).toHaveBeenCalledTimes(2);
+
+      resolveRetry?.({
+        attempted: true,
+        entries: [{ accounting: TEST_ACCOUNTING, name: "Recovered", percentRemaining: 67 }],
+        errors: [],
+      });
+      await vi.waitFor(() => expect(client.tui.showToast).toHaveBeenCalledTimes(2));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let an older deferred completion clear a replacement state's in-flight guard", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveOldToast: (() => void) | undefined;
+      let resolveNewRetry: ((value: any) => void) | undefined;
+      const loadedConfig = {
+        ...DEFAULT_CONFIG,
+        enabled: true,
+        enabledProviders: ["openai"] as string[],
+        showOnIdle: true,
+        showOnCompact: true,
+        showOnQuestion: false,
+        showSessionTokens: false,
+      };
+      mocks.loadConfig.mockResolvedValueOnce(loadedConfig);
+      const provider = {
+        id: "openai",
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch: vi
+          .fn()
+          .mockRejectedValueOnce(new Error("initial failure"))
+          .mockResolvedValueOnce({
+            attempted: true,
+            entries: [{ accounting: TEST_ACCOUNTING, name: "Old retry", percentRemaining: 70 }],
+            errors: [],
+          })
+          .mockRejectedValueOnce(new Error("replacement failure"))
+          .mockImplementationOnce(
+            () =>
+              new Promise((resolve) => {
+                resolveNewRetry = resolve;
+              }),
+          ),
+      };
+      mocks.getProviders.mockReturnValue([provider]);
+
+      const { QuotaToastPlugin } = await import("../src/plugin.js");
+      const client = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
+      client.tui.showToast.mockImplementation(({ body }: any) => {
+        if (body.message.includes("Old retry")) {
+          return new Promise((resolve) => {
+            resolveOldToast = () => resolve({});
+          });
+        }
+        return Promise.resolve({});
+      });
+      const hooks = await QuotaToastPlugin({ client } as any);
+      const sessionID = "session-race-guard";
+      const event = (type: "session.idle" | "session.compacted") =>
+        ({ event: { type, properties: { sessionID } } }) as any;
+
+      await hooks.event?.(event("session.idle"));
+      await vi.advanceTimersByTimeAsync(3_000);
+      await vi.waitFor(() => expect(resolveOldToast).toBeTypeOf("function"));
+
+      loadedConfig.enabled = false;
+      await hooks.event?.(event("session.compacted"));
+      loadedConfig.enabled = true;
+      await hooks.event?.(event("session.idle"));
+      expect(provider.fetch).toHaveBeenCalledTimes(3);
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      await vi.waitFor(() => expect(provider.fetch).toHaveBeenCalledTimes(4));
+      resolveOldToast?.();
+      await Promise.resolve();
+
+      await hooks.event?.(event("session.compacted"));
+      expect(provider.fetch).toHaveBeenCalledTimes(4);
+
+      resolveNewRetry?.({
+        attempted: true,
+        entries: [{ accounting: TEST_ACCOUNTING, name: "New retry", percentRemaining: 75 }],
+        errors: [],
+      });
+      await vi.waitFor(() => expect(getToastMessage(client, 3)).toContain("New retry"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears pending retry state when a later lifecycle trigger is a subagent", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.loadConfig.mockResolvedValueOnce({
+        ...DEFAULT_CONFIG,
+        enabled: true,
+        enabledProviders: ["openai"],
+        showOnIdle: true,
+        showOnCompact: true,
+        showOnQuestion: false,
+        showSessionTokens: false,
+      });
+      const provider = {
+        id: "openai",
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch: vi.fn().mockRejectedValue(new Error("temporary failure")),
+      };
+      mocks.getProviders.mockReturnValue([provider]);
+
+      const { QuotaToastPlugin } = await import("../src/plugin.js");
+      const client = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
+      const hooks = await QuotaToastPlugin({ client } as any);
+      const sessionID = "session-subagent";
+      await hooks.event?.({
+        event: { type: "session.idle", properties: { sessionID } },
+      } as any);
+
+      client.session.get.mockResolvedValue({
+        data: { parentID: "parent-session", model: { id: "openai/gpt-5", providerID: "openai" } },
+      });
+      await hooks.event?.({
+        event: { type: "session.compacted", properties: { sessionID } },
+      } as any);
+      await vi.advanceTimersByTimeAsync(300_000);
+
+      expect(provider.fetch).toHaveBeenCalledTimes(1);
+      expect(client.tui.showToast).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps deferred work alive after dispose while disposing telemetry ownership", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.loadConfig.mockResolvedValueOnce({
+        ...DEFAULT_CONFIG,
+        enabled: true,
+        enabledProviders: ["openai"],
+        showOnIdle: true,
+        showOnQuestion: false,
+        showSessionTokens: false,
+      });
+      const provider = {
+        id: "openai",
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch: vi
+          .fn()
+          .mockRejectedValueOnce(new Error("temporary failure"))
+          .mockResolvedValueOnce({
+            attempted: true,
+            entries: [{ accounting: TEST_ACCOUNTING, name: "After dispose", percentRemaining: 69 }],
+            errors: [],
+          }),
+      };
+      mocks.getProviders.mockReturnValue([provider]);
+
+      const { QuotaToastPlugin } = await import("../src/plugin.js");
+      const client = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
+      const hooks = await QuotaToastPlugin({ client } as any);
+      await hooks.event?.({
+        event: { type: "session.idle", properties: { sessionID: "session-dispose" } },
+      } as any);
+
+      await hooks.dispose?.();
+      expect(mocks.disposeQuotaTelemetryOwner).toHaveBeenCalledWith(client);
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(provider.fetch).toHaveBeenCalledTimes(2);
+      expect(getToastMessage(client, 1)).toContain("After dispose");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refreshes configured local-estimate toast rows across repeated session.idle events", async () => {

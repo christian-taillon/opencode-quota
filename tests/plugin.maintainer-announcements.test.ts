@@ -17,6 +17,12 @@ import {
 } from "./helpers/plugin-test-harness.js";
 
 const TEST_RUNTIME_ROOT = "/tmp/opencode-quota-plugin-announcements-tests";
+const TEST_ACCOUNTING = {
+  resultType: "quota",
+  acquisitionMethod: "remote_api",
+  ownership: "maintained",
+  authority: "provider_reported",
+} as const;
 const ANNOUNCEMENT_TOAST_MESSAGE =
   "Notice: Maintainer announcement available. Run /quota_announcements.";
 
@@ -49,6 +55,11 @@ const tuiDiagnosticsMocks = vi.hoisted(() => ({
   inspectTuiConfig: vi.fn(),
 }));
 
+const resetMocks = vi.hoisted(() => ({
+  observeQuotaResetNotifications: vi.fn(),
+  formatQuotaResetNotification: vi.fn(),
+}));
+
 vi.mock("@opencode-ai/plugin", () => createPluginToolMockModule());
 vi.mock("../src/lib/config.js", () => createConfigModuleMock(mocks.loadConfig));
 vi.mock("../src/providers/registry.js", () =>
@@ -75,6 +86,10 @@ vi.mock("../src/lib/maintainer-announcements.js", () => ({
     return `Notice: ${activeCount} maintainer announcements available. Run /quota_announcements.`;
   },
   getMaintainerAnnouncementsSummary: announcementMocks.getMaintainerAnnouncementsSummary,
+}));
+vi.mock("../src/lib/quota-reset-notifications.js", () => ({
+  observeQuotaResetNotifications: resetMocks.observeQuotaResetNotifications,
+  formatQuotaResetNotification: resetMocks.formatQuotaResetNotification,
 }));
 
 function makeAnnouncementSummary(overrides: Record<string, unknown> = {}) {
@@ -122,7 +137,7 @@ function configureQuestionQuotaToast(
       isAvailable: vi.fn().mockResolvedValue(true),
       fetch: vi.fn().mockResolvedValue({
         attempted: true,
-        entries: [{ name: "Copilot", percentRemaining: 81 }],
+        entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 81 }],
         errors: [],
       }),
     },
@@ -186,6 +201,8 @@ describe("maintainer announcement plugin integration", () => {
     tuiDiagnosticsMocks.inspectTuiConfig.mockResolvedValue(
       createPluginTuiConfigInspection(TEST_RUNTIME_ROOT),
     );
+    resetMocks.observeQuotaResetNotifications.mockResolvedValue([]);
+    resetMocks.formatQuotaResetNotification.mockReturnValue(null);
     await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true });
   });
 
@@ -587,6 +604,132 @@ describe("maintainer announcement plugin integration", () => {
       expect.objectContaining({ enabledProviders: ["copilot"] }),
     );
     expect(tuiDiagnosticsMocks.inspectTuiConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares rendered messages globally without transferring detected-provider metadata", async () => {
+    const configA = makeQuotaToastTestConfig({
+      enabled: true,
+      enableToast: true,
+      enabledProviders: "auto",
+      showOnIdle: false,
+      showOnQuestion: true,
+      showOnCompact: false,
+      minIntervalMs: 60_000,
+      maintainerAnnouncements: { enabled: true, home: true },
+    });
+    mocks.loadConfig.mockResolvedValueOnce(configA);
+    const providerA = {
+      id: "copilot",
+      isAvailable: vi.fn().mockResolvedValue(true),
+      fetch: vi.fn().mockResolvedValue({
+        attempted: true,
+        entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot A", percentRemaining: 81 }],
+        errors: [],
+      }),
+    };
+    mocks.getProviders.mockReturnValue([providerA]);
+    announcementMocks.getMaintainerAnnouncementsSummary.mockImplementation((params: any) => {
+      const enabledProviders = Array.isArray(params?.enabledProviders)
+        ? params.enabledProviders
+        : [];
+      return enabledProviders.includes("copilot")
+        ? makeAnnouncementSummary()
+        : makeAnnouncementSummary({
+            activeCount: 0,
+            futureCount: 1,
+            activeAnnouncements: [],
+          });
+    });
+
+    const { QuotaToastPlugin } = await import("../src/plugin.js");
+    const clientA = createClient();
+    const hooksA = await QuotaToastPlugin({ client: clientA } as any);
+    await runSuccessfulQuestion(hooksA, "session-shared-cache");
+    await flushMaintainerFallbackWork();
+
+    expect(providerA.fetch).toHaveBeenCalledOnce();
+    expect(getToastMessage(clientA, 0)).toContain("Copilot A");
+    expect(getToastMessage(clientA, 1)).toBe(ANNOUNCEMENT_TOAST_MESSAGE);
+
+    const configB = makeQuotaToastTestConfig({ ...configA });
+    mocks.loadConfig.mockResolvedValueOnce(configB);
+    const providerB = {
+      id: "copilot",
+      isAvailable: vi.fn().mockResolvedValue(true),
+      fetch: vi.fn().mockResolvedValue({
+        attempted: true,
+        entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot B", percentRemaining: 74 }],
+        errors: [],
+      }),
+    };
+    mocks.getProviders.mockReturnValue([providerB]);
+    const clientB = createClient();
+    const hooksB = await QuotaToastPlugin({ client: clientB } as any);
+
+    await runSuccessfulQuestion(hooksB, "session-shared-cache");
+    await flushMaintainerFallbackWork();
+
+    expect(providerB.fetch).not.toHaveBeenCalled();
+    expect(getToastMessage(clientB, 0)).toContain("Copilot A");
+    expect(clientB.tui.showToast).toHaveBeenCalledTimes(1);
+    expect(announcementMocks.getMaintainerAnnouncementsSummary).toHaveBeenLastCalledWith(
+      expect.objectContaining({ enabledProviders: [] }),
+    );
+
+    const { __resetQuotaStateForTests } = await import("../src/lib/quota-state.js");
+    __resetQuotaStateForTests();
+    await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true });
+
+    await runSuccessfulQuestion(hooksB, "session-instance-b-fresh");
+    await flushMaintainerFallbackWork();
+
+    expect(providerB.fetch).toHaveBeenCalledOnce();
+    expect(getToastMessage(clientB, 1)).toContain("Copilot B");
+    expect(getToastMessage(clientB, 2)).toBe(ANNOUNCEMENT_TOAST_MESSAGE);
+    expect(announcementMocks.getMaintainerAnnouncementsSummary).toHaveBeenLastCalledWith(
+      expect.objectContaining({ enabledProviders: ["copilot"] }),
+    );
+  });
+
+  it("keeps primary first while announcement and reset secondaries remain independently one-shot", async () => {
+    configureQuestionQuotaToast({
+      minIntervalMs: 60_000,
+      resetNotifications: { enabled: true, windows: ["weekly"] },
+    });
+    resetMocks.observeQuotaResetNotifications.mockResolvedValue([
+      { providerId: "copilot", entryName: "Copilot", window: "weekly" },
+    ]);
+    resetMocks.formatQuotaResetNotification.mockReturnValue("Copilot weekly quota reset");
+
+    const { QuotaToastPlugin } = await import("../src/plugin.js");
+    const client = createClient();
+    const hooks = await QuotaToastPlugin({ client } as any);
+
+    await runSuccessfulQuestion(hooks, "session-secondary-order");
+    await flushMaintainerFallbackWork();
+    await runSuccessfulQuestion(hooks, "session-secondary-order");
+    await flushMaintainerFallbackWork();
+
+    const bodies = client.tui.showToast.mock.calls.map((call) => call[0]?.body);
+    const primaryIndexes = bodies
+      .map((body, index) =>
+        body?.variant === "info" && body?.message.includes("81%") ? index : -1,
+      )
+      .filter((index) => index >= 0);
+    const announcementIndexes = bodies
+      .map((body, index) => (body?.message === ANNOUNCEMENT_TOAST_MESSAGE ? index : -1))
+      .filter((index) => index >= 0);
+    const resetIndexes = bodies
+      .map((body, index) => (body?.variant === "success" ? index : -1))
+      .filter((index) => index >= 0);
+
+    expect(primaryIndexes).toHaveLength(2);
+    expect(announcementIndexes).toHaveLength(1);
+    expect(resetIndexes).toHaveLength(1);
+    expect(primaryIndexes[0]).toBe(0);
+    expect(announcementIndexes[0]).toBeGreaterThan(primaryIndexes[0]!);
+    expect(resetIndexes[0]).toBeGreaterThan(primaryIndexes[0]!);
+    expect(resetMocks.observeQuotaResetNotifications).toHaveBeenCalledOnce();
   });
 
   it("retries fallback after TUI detection fails", async () => {

@@ -34,10 +34,18 @@ const EXPECTED_PROVIDER_ORDER = [
 
 describe("provider registry", () => {
   it("keeps every catalog provider exactly once in observable display order", () => {
-    const ids = getProviders().map((provider) => provider.id);
+    const first = getProviders();
+    const second = getProviders();
+    const ids = first.map((provider) => provider.id);
 
     expect(ids).toEqual(EXPECTED_PROVIDER_ORDER);
+    expect(second.map((provider) => provider.id)).toEqual(EXPECTED_PROVIDER_ORDER);
     expect(new Set(ids).size).toBe(ids.length);
     expect(new Set(ids)).toEqual(new Set(Object.keys(QUOTA_PROVIDER_RUNTIME_IDS)));
+    expect(second).not.toBe(first);
+    expect(second).toHaveLength(first.length);
+    first.forEach((provider, index) => {
+      expect(second[index]).toBe(provider);
+    });
   });
 });
