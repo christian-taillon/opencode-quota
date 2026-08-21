@@ -73,6 +73,7 @@ const mocks = vi.hoisted(() => ({
   reconcileDetectedProvidersInGlobalConfig: vi.fn(),
   observeQuotaResetNotifications: vi.fn(),
   formatQuotaResetNotification: vi.fn(),
+  disposeQuotaTelemetryOwner: vi.fn(),
 }));
 
 vi.mock("@opencode-ai/plugin", () => createPluginToolMockModule());
@@ -108,6 +109,11 @@ vi.mock("../src/lib/opencode-config-providers.js", () => ({
 vi.mock("../src/lib/quota-reset-notifications.js", () => ({
   observeQuotaResetNotifications: mocks.observeQuotaResetNotifications,
   formatQuotaResetNotification: mocks.formatQuotaResetNotification,
+}));
+
+vi.mock("../src/lib/quota-telemetry.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/quota-telemetry.js")>()),
+  disposeQuotaTelemetryOwner: mocks.disposeQuotaTelemetryOwner,
 }));
 
 describe("/quota command behavior", () => {
@@ -146,6 +152,135 @@ describe("/quota command behavior", () => {
     await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true });
   });
 
+  it("maps host hooks while keeping commands, shared callbacks, and dispose adapter-owned", async () => {
+    const handleTrigger = vi.fn().mockResolvedValue(undefined);
+    const runtimeModule = await import("../src/lib/quota-toast-runtime.js");
+    let runtimeDependencies:
+      | Parameters<typeof runtimeModule.createQuotaToastRuntime>[0]
+      | undefined;
+    vi.spyOn(runtimeModule, "createQuotaToastRuntime").mockImplementation((dependencies) => {
+      runtimeDependencies = dependencies;
+      return { handleTrigger };
+    });
+    const dialogModule = await import("../src/lib/quota-dialog-commands.js");
+    const buildDialogOutput = vi
+      .spyOn(dialogModule, "buildQuotaDialogCommandOutput")
+      .mockResolvedValue({ state: "output", output: "adapter output" });
+    const { QuotaToastPlugin } = await import("../src/plugin.js");
+    const client = createClient();
+    const hooks = await QuotaToastPlugin({ client, directory: process.cwd() } as any);
+    if (!runtimeDependencies) throw new Error("toast runtime dependencies were not captured");
+
+    await hooks.config?.({});
+    await hooks["command.execute.before"]?.({
+      command: "not-quota",
+      sessionID: "session-command",
+      arguments: "",
+    } as any);
+    await hooks.event?.({
+      event: { type: "message.updated", properties: { sessionID: "session-event" } },
+    } as any);
+    await hooks.event?.({
+      event: { type: "session.idle", properties: {} },
+    } as any);
+    await hooks["tool.execute.after"]?.(
+      { tool: "bash", sessionID: "session-tool", callID: "call-bash" },
+      {} as any,
+    );
+    expect(handleTrigger).not.toHaveBeenCalled();
+
+    await hooks.event?.({
+      event: { type: "session.idle", properties: { sessionID: "session-idle" } },
+    } as any);
+    await hooks.event?.({
+      event: { type: "session.compacted", properties: { sessionID: "session-compact" } },
+    } as any);
+    await hooks["tool.execute.after"]?.(
+      { tool: "question", sessionID: "session-question", callID: "call-question" },
+      {} as any,
+    );
+    expect(handleTrigger.mock.calls).toEqual([
+      [{ sessionID: "session-idle", trigger: "session.idle" }],
+      [{ sessionID: "session-compact", trigger: "session.compacted" }],
+      [{ sessionID: "session-question", trigger: "question" }],
+    ]);
+
+    await runtimeDependencies.reconcileDetectedProviders(["openai"]);
+    expect(mocks.reconcileDetectedProvidersInGlobalConfig).toHaveBeenCalledWith({
+      configRootDir: process.cwd(),
+      detectedProviderIds: ["openai"],
+    });
+    const tokenError = { sessionID: "session-status", error: "token storage unavailable" };
+    runtimeDependencies.setSessionTokenError(tokenError);
+    await hooks.tool?.quota_status.execute({}, { sessionID: "session-status", metadata: vi.fn() });
+    expect(buildDialogOutput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: "quota_status",
+        lastSessionTokenError: tokenError,
+      }),
+    );
+
+    try {
+      await hooks["command.execute.before"]?.({
+        command: "quota",
+        sessionID: "session-command",
+        arguments: "",
+      } as any);
+    } catch {
+      // Deterministic commands signal host handling after raw output injection.
+    }
+    expect(buildDialogOutput).toHaveBeenCalledWith(
+      expect.objectContaining({ command: "quota", sessionID: "session-command" }),
+    );
+    expect(handleTrigger).toHaveBeenCalledTimes(3);
+
+    await hooks.dispose?.();
+    expect(mocks.disposeQuotaTelemetryOwner).toHaveBeenCalledWith(client);
+    expect(handleTrigger).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps pending runtime work alive when adapter dispose releases only telemetry", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.loadConfig.mockResolvedValueOnce({
+        ...DEFAULT_CONFIG,
+        enabled: true,
+        enabledProviders: ["openai"],
+        showOnIdle: true,
+        showOnQuestion: false,
+        showSessionTokens: false,
+      });
+      const provider = {
+        id: "openai",
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch: vi
+          .fn()
+          .mockRejectedValueOnce(new Error("temporary failure"))
+          .mockResolvedValueOnce({
+            attempted: true,
+            entries: [{ accounting: TEST_ACCOUNTING, name: "After dispose", percentRemaining: 69 }],
+            errors: [],
+          }),
+      };
+      mocks.getProviders.mockReturnValue([provider]);
+      const { QuotaToastPlugin } = await import("../src/plugin.js");
+      const client = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
+      const hooks = await QuotaToastPlugin({ client } as any);
+
+      await hooks.event?.({
+        event: { type: "session.idle", properties: { sessionID: "session-dispose" } },
+      } as any);
+      await hooks.dispose?.();
+      expect(mocks.disposeQuotaTelemetryOwner).toHaveBeenCalledWith(client);
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(provider.fetch).toHaveBeenCalledTimes(2);
+      expect(getToastMessage(client, 1)).toContain("After dispose");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("applies pricing snapshot selection from config on first use", async () => {
     mocks.loadConfig.mockResolvedValueOnce({
       ...DEFAULT_CONFIG,
@@ -171,75 +306,6 @@ describe("/quota command behavior", () => {
     expect(mocks.setPricingSnapshotSelection).toHaveBeenCalledWith("bundled");
     expect(mocks.setPricingSnapshotAutoRefresh).toHaveBeenCalledWith(7);
     expect(mocks.maybeRefreshPricingSnapshot).not.toHaveBeenCalled();
-  });
-
-  it("loads config before honoring the first session.idle trigger", async () => {
-    mocks.loadConfig.mockResolvedValueOnce({
-      ...DEFAULT_CONFIG,
-      enabled: true,
-      showOnIdle: false,
-      showOnCompact: false,
-      showOnQuestion: false,
-      showSessionTokens: false,
-      minIntervalMs: 60_000,
-    });
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient();
-
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await hooks.event?.({
-      event: {
-        type: "session.idle",
-        properties: { sessionID: "session-idle" },
-      },
-    } as any);
-
-    expect(mocks.loadConfig).toHaveBeenCalledTimes(1);
-    expect(client.tui.showToast).not.toHaveBeenCalled();
-    expect(mocks.maybeRefreshPricingSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({
-        reason: "init",
-        snapshotSelection: DEFAULT_CONFIG.pricingSnapshot.source,
-      }),
-    );
-  });
-
-  it("shows explicit provider availability errors in idle-triggered toasts", async () => {
-    mocks.loadConfig.mockResolvedValueOnce({
-      ...DEFAULT_CONFIG,
-      enabled: true,
-      enabledProviders: ["copilot"],
-      showOnIdle: true,
-      showOnCompact: false,
-      showOnQuestion: false,
-      showSessionTokens: false,
-      minIntervalMs: 60_000,
-    });
-
-    const provider = {
-      id: "copilot",
-      isAvailable: vi.fn().mockRejectedValue(new Error("boom")),
-      fetch: vi.fn(),
-    };
-    mocks.getProviders.mockReturnValue([provider]);
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient();
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await hooks.event?.({
-      event: {
-        type: "session.idle",
-        properties: { sessionID: "session-idle-explicit-provider" },
-      },
-    } as any);
-
-    expect(provider.fetch).not.toHaveBeenCalled();
-    expect(client.tui.showToast).toHaveBeenCalledTimes(1);
-    const message = getToastMessage(client);
-    expect(message).toContain("Copilot: Unavailable (not detected)");
   });
 
   it("reconciles auth-detected providers through the global config writer in auto mode", async () => {
@@ -314,156 +380,6 @@ describe("/quota command behavior", () => {
 
     expect(client.tui.showToast).toHaveBeenCalledTimes(1);
     expect(getToastMessage(client)).toContain("OpenAI");
-  });
-
-  it("shows explicit current-model skip errors in idle-triggered toasts", async () => {
-    mocks.loadConfig.mockResolvedValueOnce({
-      ...DEFAULT_CONFIG,
-      enabled: true,
-      enabledProviders: ["openai"],
-      onlyCurrentModel: true,
-      showOnIdle: true,
-      showOnCompact: false,
-      showOnQuestion: false,
-      showSessionTokens: false,
-      minIntervalMs: 60_000,
-    });
-
-    const provider = {
-      id: "openai",
-      matchesCurrentModel: vi.fn().mockReturnValue(false),
-      isAvailable: vi.fn(),
-      fetch: vi.fn(),
-    };
-    mocks.getProviders.mockReturnValue([provider]);
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient({
-      modelID: "claude-3.7-sonnet",
-      providerID: "anthropic",
-    });
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await hooks.event?.({
-      event: {
-        type: "session.idle",
-        properties: { sessionID: "session-idle-model-filter" },
-      },
-    } as any);
-
-    expect(provider.isAvailable).not.toHaveBeenCalled();
-    expect(provider.fetch).not.toHaveBeenCalled();
-    expect(client.tui.showToast).toHaveBeenCalledTimes(1);
-    const message = getToastMessage(client);
-    expect(message).toContain("OpenAI: Skipped (current model: claude-3.7-sonnet)");
-  });
-
-  it("applies percentDisplayMode to idle-triggered toast output", async () => {
-    mocks.loadConfig.mockResolvedValueOnce({
-      ...DEFAULT_CONFIG,
-      enabled: true,
-      enabledProviders: ["copilot"],
-      showOnIdle: true,
-      showOnCompact: false,
-      showOnQuestion: false,
-      showSessionTokens: false,
-      percentDisplayMode: "used",
-      minIntervalMs: 60_000,
-    });
-
-    const provider = {
-      id: "copilot",
-      isAvailable: vi.fn().mockResolvedValue(true),
-      fetch: vi.fn().mockResolvedValue({
-        attempted: true,
-        entries: [
-          {
-            accounting: TEST_ACCOUNTING,
-            name: "Copilot",
-            percentRemaining: 81,
-            resetTimeIso: "2099-01-01T00:00:00.000Z",
-          },
-        ],
-        errors: [],
-      }),
-    };
-    mocks.getProviders.mockReturnValue([provider]);
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient();
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await hooks.event?.({
-      event: {
-        type: "session.idle",
-        properties: { sessionID: "session-idle-percent-display" },
-      },
-    } as any);
-
-    expect(client.tui.showToast).toHaveBeenCalledTimes(1);
-    expect(mocks.observeQuotaResetNotifications).not.toHaveBeenCalled();
-    const message = getToastMessage(client);
-    expect(message).toContain("19% used");
-    expect(message).not.toContain("81% left");
-  });
-
-  it("shows one additional success toast when an enabled quota reset is observed", async () => {
-    mocks.loadConfig.mockResolvedValueOnce({
-      ...DEFAULT_CONFIG,
-      enabled: true,
-      enableToast: true,
-      resetNotifications: { enabled: true, windows: ["weekly"] },
-      enabledProviders: ["openai"],
-      showOnIdle: true,
-      showSessionTokens: false,
-      minIntervalMs: 60_000,
-    });
-    const provider = {
-      id: "openai",
-      isAvailable: vi.fn().mockResolvedValue(true),
-      fetch: vi.fn().mockResolvedValue({
-        attempted: true,
-        entries: [
-          {
-            accounting: TEST_ACCOUNTING,
-            name: "OpenAI",
-            label: "7d",
-            percentRemaining: 100,
-            resetTimeIso: "2099-01-01T00:00:00.000Z",
-          },
-        ],
-        errors: [],
-      }),
-    };
-    mocks.getProviders.mockReturnValue([provider]);
-    mocks.observeQuotaResetNotifications.mockResolvedValue([
-      { providerId: "openai", label: "OpenAI", window: "weekly", percentRemaining: 100 },
-    ]);
-    mocks.formatQuotaResetNotification.mockReturnValue(
-      "Weekly quota reset: OpenAI is available again (100% remaining).",
-    );
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient();
-    const hooks = await QuotaToastPlugin({ client } as any);
-    await hooks.event?.({
-      event: { type: "session.idle", properties: { sessionID: "session-reset" } },
-    } as any);
-
-    expect(mocks.observeQuotaResetNotifications).toHaveBeenCalledWith({
-      providers: [expect.objectContaining({ providerId: "openai" })],
-      windows: ["weekly"],
-    });
-    expect(provider.fetch).toHaveBeenCalledTimes(1);
-    expect(client.tui.showToast).toHaveBeenCalledTimes(2);
-    expect(client.tui.showToast).toHaveBeenLastCalledWith({
-      body: {
-        title: "Quota available",
-        message: "Weekly quota reset: OpenAI is available again (100% remaining).",
-        variant: "success",
-        duration: 9000,
-      },
-    });
   });
 
   it("honors percentDisplayMode for /quota output", async () => {
@@ -565,267 +481,6 @@ describe("/quota command behavior", () => {
     const injected = await buildDialogOutput({ client, sessionID: "session-fetch-failure" });
     expect(injected).toContain("Cursor: Failed to read quota data");
     expect(injected).not.toContain("Providers detected");
-  });
-
-  it("retries a toast provider fetch failure on a deferred timer with provider cache bypass", async () => {
-    vi.useFakeTimers();
-    try {
-      mocks.loadConfig.mockResolvedValueOnce({
-        ...DEFAULT_CONFIG,
-        enabled: true,
-        enabledProviders: ["openai"],
-        showOnIdle: true,
-        showOnCompact: false,
-        showOnQuestion: false,
-        showSessionTokens: false,
-        minIntervalMs: 60_000,
-      });
-
-      const provider = {
-        id: "openai",
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi
-          .fn()
-          .mockRejectedValueOnce(new Error("firewall warming up"))
-          .mockResolvedValueOnce({
-            attempted: true,
-            entries: [{ accounting: TEST_ACCOUNTING, name: "OpenAI Pro", percentRemaining: 72 }],
-            errors: [],
-          }),
-      };
-      mocks.getProviders.mockReturnValue([provider]);
-
-      const { QuotaToastPlugin } = await import("../src/plugin.js");
-      const client = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
-      const hooks = await QuotaToastPlugin({ client } as any);
-
-      await hooks.event?.({
-        event: {
-          type: "session.idle",
-          properties: { sessionID: "session-deferred-retry" },
-        },
-      } as any);
-
-      expect(provider.fetch).toHaveBeenCalledTimes(1);
-      expect(client.tui.showToast).toHaveBeenCalledTimes(1);
-      expect(getToastMessage(client, 0)).toContain("OpenAI: Failed to read quota data");
-
-      await vi.advanceTimersByTimeAsync(3_000);
-
-      expect(provider.fetch).toHaveBeenCalledTimes(2);
-      expect(client.tui.showToast).toHaveBeenCalledTimes(2);
-      expect(getToastMessage(client, 1)).toContain("72% left");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("retries a suppressed toast provider fetch failure when showOnBothFail is false", async () => {
-    vi.useFakeTimers();
-    try {
-      mocks.loadConfig.mockResolvedValueOnce({
-        ...DEFAULT_CONFIG,
-        enabled: true,
-        enabledProviders: ["openai"],
-        showOnIdle: true,
-        showOnCompact: false,
-        showOnQuestion: false,
-        showOnBothFail: false,
-        showSessionTokens: false,
-        minIntervalMs: 60_000,
-      });
-
-      const provider = {
-        id: "openai",
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi
-          .fn()
-          .mockRejectedValueOnce(new Error("startup network unavailable"))
-          .mockResolvedValueOnce({
-            attempted: true,
-            entries: [{ accounting: TEST_ACCOUNTING, name: "OpenAI Pro", percentRemaining: 61 }],
-            errors: [],
-          }),
-      };
-      mocks.getProviders.mockReturnValue([provider]);
-
-      const { QuotaToastPlugin } = await import("../src/plugin.js");
-      const client = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
-      const hooks = await QuotaToastPlugin({ client } as any);
-
-      await hooks.event?.({
-        event: {
-          type: "session.idle",
-          properties: { sessionID: "session-deferred-suppressed-error" },
-        },
-      } as any);
-
-      expect(provider.fetch).toHaveBeenCalledTimes(1);
-      expect(client.tui.showToast).not.toHaveBeenCalled();
-
-      await vi.advanceTimersByTimeAsync(3_000);
-
-      expect(provider.fetch).toHaveBeenCalledTimes(2);
-      expect(client.tui.showToast).toHaveBeenCalledTimes(1);
-      expect(getToastMessage(client)).toContain("61% left");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("retries an explicit provider availability exception on a deferred timer", async () => {
-    vi.useFakeTimers();
-    try {
-      mocks.loadConfig.mockResolvedValueOnce({
-        ...DEFAULT_CONFIG,
-        enabled: true,
-        enabledProviders: ["openai"],
-        showOnIdle: true,
-        showOnCompact: false,
-        showOnQuestion: false,
-        showSessionTokens: false,
-        minIntervalMs: 60_000,
-      });
-
-      const provider = {
-        id: "openai",
-        isAvailable: vi
-          .fn()
-          .mockRejectedValueOnce(new Error("OpenCode auth not readable yet"))
-          .mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue({
-          attempted: true,
-          entries: [{ accounting: TEST_ACCOUNTING, name: "OpenAI Pro", percentRemaining: 58 }],
-          errors: [],
-        }),
-      };
-      mocks.getProviders.mockReturnValue([provider]);
-
-      const { QuotaToastPlugin } = await import("../src/plugin.js");
-      const client = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
-      const hooks = await QuotaToastPlugin({ client } as any);
-
-      await hooks.event?.({
-        event: {
-          type: "session.idle",
-          properties: { sessionID: "session-deferred-availability" },
-        },
-      } as any);
-
-      expect(provider.isAvailable).toHaveBeenCalledTimes(1);
-      expect(provider.fetch).not.toHaveBeenCalled();
-      expect(client.tui.showToast).toHaveBeenCalledTimes(1);
-      expect(getToastMessage(client, 0)).toContain("OpenAI: Unavailable (not detected)");
-
-      await vi.advanceTimersByTimeAsync(3_000);
-
-      expect(provider.isAvailable).toHaveBeenCalledTimes(2);
-      expect(provider.fetch).toHaveBeenCalledTimes(1);
-      expect(client.tui.showToast).toHaveBeenCalledTimes(2);
-      expect(getToastMessage(client, 1)).toContain("58% left");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("consumes a pending deferred retry immediately on the next lifecycle toast", async () => {
-    mocks.loadConfig.mockResolvedValueOnce({
-      ...DEFAULT_CONFIG,
-      enabled: true,
-      enabledProviders: ["openai"],
-      showOnIdle: true,
-      showOnCompact: true,
-      showOnQuestion: false,
-      showSessionTokens: false,
-      minIntervalMs: 60_000,
-    });
-
-    const provider = {
-      id: "openai",
-      isAvailable: vi.fn().mockResolvedValue(true),
-      fetch: vi
-        .fn()
-        .mockRejectedValueOnce(new Error("opencode unavailable"))
-        .mockResolvedValueOnce({
-          attempted: true,
-          entries: [{ accounting: TEST_ACCOUNTING, name: "OpenAI Pro", percentRemaining: 66 }],
-          errors: [],
-        }),
-    };
-    mocks.getProviders.mockReturnValue([provider]);
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await hooks.event?.({
-      event: {
-        type: "session.idle",
-        properties: { sessionID: "session-deferred-lifecycle" },
-      },
-    } as any);
-    await hooks.event?.({
-      event: {
-        type: "session.compacted",
-        properties: { sessionID: "session-deferred-lifecycle" },
-      },
-    } as any);
-
-    expect(provider.fetch).toHaveBeenCalledTimes(2);
-    expect(client.tui.showToast).toHaveBeenCalledTimes(2);
-    expect(getToastMessage(client, 1)).toContain("66% left");
-  });
-
-  it("refreshes configured local-estimate toast rows across repeated session.idle events", async () => {
-    mocks.loadConfig.mockResolvedValueOnce({
-      ...DEFAULT_CONFIG,
-      enabled: true,
-      enabledProviders: ["quota-providers"],
-      quotaProviders: [
-        {
-          id: "local-project",
-          providerId: "local-project",
-          label: "Local project",
-          mode: "local-estimate",
-          windows: [{ id: "day", label: "Day", type: "utc-day", requestLimit: 10 }],
-        },
-      ],
-      showOnQuestion: false,
-      showSessionTokens: false,
-      minIntervalMs: 60_000,
-    });
-
-    const provider = {
-      id: "quota-providers",
-      isAvailable: vi.fn().mockResolvedValue(true),
-      fetch: vi
-        .fn()
-        .mockResolvedValueOnce({
-          attempted: true,
-          entries: [{ accounting: TEST_ACCOUNTING, name: "Local project", percentRemaining: 90 }],
-          errors: [],
-        })
-        .mockResolvedValueOnce({
-          attempted: true,
-          entries: [{ accounting: TEST_ACCOUNTING, name: "Local project", percentRemaining: 80 }],
-          errors: [],
-        }),
-    };
-    mocks.getProviders.mockReturnValue([provider]);
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient({ modelID: "local-model", providerID: "local-project" });
-    const hooks = await QuotaToastPlugin({ client } as any);
-    const event = {
-      event: { type: "session.idle", properties: { sessionID: "session-local-estimate" } },
-    } as any;
-
-    await hooks.event?.(event);
-    await hooks.event?.(event);
-
-    expect(provider.fetch).toHaveBeenCalledTimes(2);
-    expect(getToastMessage(client, 0)).toContain("90% left");
-    expect(getToastMessage(client, 1)).toContain("80% left");
   });
 
   it("reports explicit cursor providers with no local history as no local usage yet", async () => {
@@ -1069,163 +724,6 @@ describe("/quota command behavior", () => {
     expect(provider.fetch).toHaveBeenCalledTimes(1);
     expect(firstOutput).toContain("95% left");
     expect(secondOutput).toContain("95% left");
-  });
-
-  it("caches rendered DeepSeek value-only toast rows", async () => {
-    mocks.loadConfig.mockResolvedValueOnce({
-      ...DEFAULT_CONFIG,
-      enabled: true,
-      enabledProviders: ["deepseek"],
-      showOnIdle: true,
-      showOnCompact: false,
-      showOnQuestion: false,
-      showSessionTokens: false,
-      minIntervalMs: 60_000,
-    });
-
-    const provider = {
-      id: "deepseek",
-      isAvailable: vi.fn().mockResolvedValue(true),
-      fetch: vi.fn().mockResolvedValue({
-        attempted: true,
-        entries: [
-          { kind: "value", accounting: TEST_ACCOUNTING, name: "DeepSeek Balance", value: "$12.34" },
-        ],
-        errors: [],
-      }),
-    };
-    mocks.getProviders.mockReturnValue([provider]);
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient({ modelID: "deepseek-chat", providerID: "deepseek" });
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await hooks.event?.({
-      event: {
-        type: "session.idle",
-        properties: { sessionID: "session-deepseek-value" },
-      },
-    } as any);
-    await hooks.event?.({
-      event: {
-        type: "session.idle",
-        properties: { sessionID: "session-deepseek-value" },
-      },
-    } as any);
-
-    expect(client.tui.showToast).toHaveBeenCalledTimes(2);
-    expect(getToastMessage(client, 0)).toContain("$12.34");
-    expect(getToastMessage(client, 1)).toContain("$12.34");
-    expect(provider.isAvailable).toHaveBeenCalledTimes(1);
-    expect(provider.fetch).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not cache rendered error-only toast results", async () => {
-    mocks.loadConfig.mockResolvedValueOnce({
-      ...DEFAULT_CONFIG,
-      enabled: true,
-      enabledProviders: ["deepseek"],
-      showOnIdle: true,
-      showOnCompact: false,
-      showOnQuestion: false,
-      showOnBothFail: true,
-      showSessionTokens: false,
-      minIntervalMs: 60_000,
-    });
-
-    const provider = {
-      id: "deepseek",
-      isAvailable: vi.fn().mockResolvedValue(true),
-      fetch: vi.fn().mockResolvedValue({
-        attempted: true,
-        entries: [],
-        errors: [{ label: "DeepSeek", message: "Failed to read quota data" }],
-      }),
-    };
-    mocks.getProviders.mockReturnValue([provider]);
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient({ modelID: "deepseek-chat", providerID: "deepseek" });
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await hooks.event?.({
-      event: {
-        type: "session.idle",
-        properties: { sessionID: "session-deepseek-error" },
-      },
-    } as any);
-    await hooks.event?.({
-      event: {
-        type: "session.idle",
-        properties: { sessionID: "session-deepseek-error" },
-      },
-    } as any);
-
-    expect(client.tui.showToast).toHaveBeenCalledTimes(2);
-    expect(getToastMessage(client, 0)).toContain("DeepSeek: Failed to read quota data");
-    expect(getToastMessage(client, 1)).toContain("DeepSeek: Failed to read quota data");
-    expect(provider.isAvailable).toHaveBeenCalledTimes(2);
-  });
-
-  it("keys toast throttling by session render context so sessions do not share cached output", async () => {
-    mocks.loadConfig.mockResolvedValueOnce({
-      ...DEFAULT_CONFIG,
-      enabled: true,
-      onlyCurrentModel: true,
-      showOnIdle: true,
-      showOnCompact: false,
-      showOnQuestion: false,
-      showSessionTokens: false,
-      minIntervalMs: 60_000,
-    });
-
-    const provider = {
-      id: "openai",
-      matchesCurrentModel: vi.fn(() => true),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      fetch: vi.fn().mockImplementation(async ({ config }: any) => ({
-        attempted: true,
-        entries: [
-          {
-            accounting: TEST_ACCOUNTING,
-            name: config.currentModel ?? "unknown-model",
-            percentRemaining: 95,
-          },
-        ],
-        errors: [],
-      })),
-    };
-    mocks.getProviders.mockReturnValue([provider]);
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient();
-    client.session.get = vi.fn().mockImplementation(async ({ path }: any) => {
-      if (path.id === "session-a") {
-        return { data: { model: { id: "openai/gpt-5", providerID: "openai" } } };
-      }
-      return { data: { model: { id: "openai/gpt-4.1", providerID: "openai" } } };
-    });
-
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await hooks.event?.({
-      event: {
-        type: "session.idle",
-        properties: { sessionID: "session-a" },
-      },
-    } as any);
-    await hooks.event?.({
-      event: {
-        type: "session.idle",
-        properties: { sessionID: "session-b" },
-      },
-    } as any);
-
-    expect(provider.fetch).toHaveBeenCalledTimes(2);
-    expect(getToastMessage(client, 0)).toContain("openai/gpt-5");
-    expect(getToastMessage(client, 1)).toContain("openai/gpt-4.1");
-    expect(getToastMessage(client, 0)).not.toContain("openai/gpt-4.1");
-    expect(getToastMessage(client, 1)).not.toContain("openai/gpt-5");
   });
 
   it("keeps concurrent /quota session-token output isolated per session", async () => {

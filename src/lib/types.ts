@@ -43,6 +43,8 @@ export interface TuiSidebarPanelConfig {
   enabled: boolean;
   /** Per-surface formatStyle override. Falls back to root formatStyle when absent. */
   formatStyle?: QuotaFormatStyle;
+  /** Preferred OpenCode Go window for the collapsed sidebar row. */
+  opencodeGoPreferredWindow?: OpenCodeGoWindowKey;
 }
 
 export interface TuiCompactStatusConfig {

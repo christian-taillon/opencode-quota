@@ -333,6 +333,26 @@ describe("loadConfig", () => {
     expect(withInvalidFormatStyle.config.tuiSidebarPanel).toEqual(DEFAULT_CONFIG.tuiSidebarPanel);
     expect(withInvalidFormatStyle.meta.settingSources).toEqual({});
 
+    const validPreferredWindows = ["rolling", "weekly", "monthly"] as const;
+    for (const opencodeGoPreferredWindow of validPreferredWindows) {
+      const preferred = await loadSdkConfig({
+        tuiSidebarPanel: { opencodeGoPreferredWindow },
+      });
+      expect(preferred.config.tuiSidebarPanel).toEqual({
+        ...DEFAULT_CONFIG.tuiSidebarPanel,
+        opencodeGoPreferredWindow,
+      });
+      expect(preferred.meta.settingSources).toEqual({
+        "tuiSidebarPanel.opencodeGoPreferredWindow": "client.config.get",
+      });
+    }
+
+    const invalidPreferred = await loadSdkConfig({
+      tuiSidebarPanel: { opencodeGoPreferredWindow: "daily" },
+    });
+    expect(invalidPreferred.config.tuiSidebarPanel).toEqual(DEFAULT_CONFIG.tuiSidebarPanel);
+    expect(invalidPreferred.meta.settingSources).toEqual({});
+
     const withLegacyToastStyle = await loadSdkConfig({
       tuiSidebarPanel: {
         toastStyle: "allWindows",

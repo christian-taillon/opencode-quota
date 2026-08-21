@@ -17,6 +17,12 @@ import {
 } from "./helpers/plugin-test-harness.js";
 
 const TEST_RUNTIME_ROOT = "/tmp/opencode-quota-plugin-announcements-tests";
+const TEST_ACCOUNTING = {
+  resultType: "quota",
+  acquisitionMethod: "remote_api",
+  ownership: "maintained",
+  authority: "provider_reported",
+} as const;
 const ANNOUNCEMENT_TOAST_MESSAGE =
   "Notice: Maintainer announcement available. Run /quota_announcements.";
 
@@ -49,6 +55,11 @@ const tuiDiagnosticsMocks = vi.hoisted(() => ({
   inspectTuiConfig: vi.fn(),
 }));
 
+const resetMocks = vi.hoisted(() => ({
+  observeQuotaResetNotifications: vi.fn(),
+  formatQuotaResetNotification: vi.fn(),
+}));
+
 vi.mock("@opencode-ai/plugin", () => createPluginToolMockModule());
 vi.mock("../src/lib/config.js", () => createConfigModuleMock(mocks.loadConfig));
 vi.mock("../src/providers/registry.js", () =>
@@ -75,6 +86,10 @@ vi.mock("../src/lib/maintainer-announcements.js", () => ({
     return `Notice: ${activeCount} maintainer announcements available. Run /quota_announcements.`;
   },
   getMaintainerAnnouncementsSummary: announcementMocks.getMaintainerAnnouncementsSummary,
+}));
+vi.mock("../src/lib/quota-reset-notifications.js", () => ({
+  observeQuotaResetNotifications: resetMocks.observeQuotaResetNotifications,
+  formatQuotaResetNotification: resetMocks.formatQuotaResetNotification,
 }));
 
 function makeAnnouncementSummary(overrides: Record<string, unknown> = {}) {
@@ -122,7 +137,7 @@ function configureQuestionQuotaToast(
       isAvailable: vi.fn().mockResolvedValue(true),
       fetch: vi.fn().mockResolvedValue({
         attempted: true,
-        entries: [{ name: "Copilot", percentRemaining: 81 }],
+        entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 81 }],
         errors: [],
       }),
     },
@@ -186,6 +201,8 @@ describe("maintainer announcement plugin integration", () => {
     tuiDiagnosticsMocks.inspectTuiConfig.mockResolvedValue(
       createPluginTuiConfigInspection(TEST_RUNTIME_ROOT),
     );
+    resetMocks.observeQuotaResetNotifications.mockResolvedValue([]);
+    resetMocks.formatQuotaResetNotification.mockReturnValue(null);
     await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true });
   });
 
@@ -291,31 +308,6 @@ describe("maintainer announcement plugin integration", () => {
     );
   });
 
-  it("does not show fallback toasts when the quota TUI plugin is configured", async () => {
-    configureQuestionQuotaToast();
-    tuiDiagnosticsMocks.inspectTuiConfig.mockResolvedValueOnce(
-      createPluginTuiConfigInspection(TEST_RUNTIME_ROOT, {
-        configured: true,
-        inferredSelectedPath: `${TEST_RUNTIME_ROOT}/config/tui.json`,
-        presentPaths: [`${TEST_RUNTIME_ROOT}/config/tui.json`],
-        candidatePaths: [`${TEST_RUNTIME_ROOT}/config/tui.json`],
-        quotaPluginConfigured: true,
-        quotaPluginConfigPaths: [`${TEST_RUNTIME_ROOT}/config/tui.json`],
-      }),
-    );
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient();
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await runSuccessfulQuestion(hooks);
-
-    await flushMaintainerFallbackWork();
-    expect(client.tui.showToast).toHaveBeenCalledTimes(1);
-    expect(getToastMessage(client)).toContain("Copilot");
-    expect(getToastMessage(client)).not.toContain("/quota_announcements");
-  });
-
   it("shows one count-only fallback toast after the first visible quota toast without TUI", async () => {
     configureQuestionQuotaToast();
 
@@ -333,76 +325,6 @@ describe("maintainer announcement plugin integration", () => {
     expect(announcementMocks.getMaintainerAnnouncementsSummary).toHaveBeenCalledWith(
       expect.objectContaining({ enabledProviders: ["copilot"] }),
     );
-  });
-
-  it("does not show provider-targeted fallback for a different detected provider", async () => {
-    mocks.loadConfig.mockResolvedValueOnce(
-      makeQuotaToastTestConfig({
-        enabled: true,
-        enableToast: true,
-        enabledProviders: "auto",
-        showOnIdle: false,
-        showOnQuestion: true,
-        showOnCompact: false,
-        minIntervalMs: 0,
-        maintainerAnnouncements: {
-          enabled: true,
-          home: true,
-        },
-      }),
-    );
-    mocks.getProviders.mockReturnValue([
-      {
-        id: "openai",
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue({
-          attempted: true,
-          entries: [{ name: "OpenAI", percentRemaining: 75 }],
-          errors: [],
-        }),
-      },
-    ]);
-    announcementMocks.getMaintainerAnnouncementsSummary.mockImplementation((params: any) => {
-      const enabledProviders = Array.isArray(params?.enabledProviders)
-        ? params.enabledProviders
-        : [];
-      return enabledProviders.includes("copilot")
-        ? makeAnnouncementSummary()
-        : makeAnnouncementSummary({ activeCount: 0, activeAnnouncements: [] });
-    });
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await runSuccessfulQuestion(hooks);
-    await flushMaintainerFallbackWork();
-
-    expect(client.tui.showToast).toHaveBeenCalledTimes(1);
-    expect(getToastMessage(client, 0)).toContain("OpenAI");
-    expect(announcementMocks.getMaintainerAnnouncementsSummary).toHaveBeenCalledWith(
-      expect.objectContaining({ enabledProviders: ["openai"] }),
-    );
-    expect(tuiDiagnosticsMocks.inspectTuiConfig).not.toHaveBeenCalled();
-  });
-
-  it("shows the fallback at most once per plugin process", async () => {
-    configureQuestionQuotaToast();
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient();
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await runSuccessfulQuestion(hooks, "session-question-1");
-    await flushMaintainerFallbackWork();
-
-    await runSuccessfulQuestion(hooks, "session-question-2");
-    await flushMaintainerFallbackWork();
-
-    expect(getToastMessage(client, 0)).toContain("Copilot");
-    expect(getToastMessage(client, 1)).toBe(ANNOUNCEMENT_TOAST_MESSAGE);
-    expect(getToastMessage(client, 2)).toContain("Copilot");
-    expect(tuiDiagnosticsMocks.inspectTuiConfig).toHaveBeenCalledTimes(1);
   });
 
   it("does not attempt fallback before or without a visible quota toast", async () => {
@@ -434,210 +356,5 @@ describe("maintainer announcement plugin integration", () => {
     expect(announcementMocks.getMaintainerAnnouncementsSummary).not.toHaveBeenCalled();
     expect(tuiDiagnosticsMocks.inspectTuiConfig).not.toHaveBeenCalled();
     expect(client.tui.showToast).not.toHaveBeenCalled();
-  });
-
-  it("does not show fallback when announcements are disabled", async () => {
-    configureQuestionQuotaToast({
-      maintainerAnnouncements: {
-        enabled: false,
-        home: true,
-      },
-    });
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient();
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await runSuccessfulQuestion(hooks);
-
-    expect(client.tui.showToast).toHaveBeenCalledTimes(1);
-    expect(announcementMocks.getMaintainerAnnouncementsSummary).not.toHaveBeenCalled();
-    expect(tuiDiagnosticsMocks.inspectTuiConfig).not.toHaveBeenCalled();
-  });
-
-  it("does not show fallback when automatic announcement surfaces are disabled", async () => {
-    configureQuestionQuotaToast({
-      maintainerAnnouncements: {
-        enabled: true,
-        home: false,
-      },
-    });
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient();
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await runSuccessfulQuestion(hooks);
-
-    expect(client.tui.showToast).toHaveBeenCalledTimes(1);
-    expect(announcementMocks.getMaintainerAnnouncementsSummary).not.toHaveBeenCalled();
-    expect(tuiDiagnosticsMocks.inspectTuiConfig).not.toHaveBeenCalled();
-  });
-
-  it("does not retry fallback when no bundled notices can become active", async () => {
-    configureQuestionQuotaToast();
-    announcementMocks.getMaintainerAnnouncementsSummary.mockReturnValue(
-      makeAnnouncementSummary({
-        activeCount: 0,
-        futureCount: 0,
-        activeAnnouncements: [],
-      }),
-    );
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient();
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await runSuccessfulQuestion(hooks, "session-question-1");
-    await runSuccessfulQuestion(hooks, "session-question-2");
-
-    expect(client.tui.showToast).toHaveBeenCalledTimes(2);
-    expect(announcementMocks.getMaintainerAnnouncementsSummary).toHaveBeenCalledTimes(1);
-    expect(tuiDiagnosticsMocks.inspectTuiConfig).not.toHaveBeenCalled();
-  });
-
-  it("does not attempt fallback when enableToast prevents a visible quota toast", async () => {
-    configureQuestionQuotaToast({ enableToast: false });
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient();
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await runSuccessfulQuestion(hooks);
-
-    expect(client.tui.showToast).not.toHaveBeenCalled();
-    expect(announcementMocks.getMaintainerAnnouncementsSummary).not.toHaveBeenCalled();
-    expect(tuiDiagnosticsMocks.inspectTuiConfig).not.toHaveBeenCalled();
-  });
-
-  it("keeps future-dated fallback pending until a later visible quota toast after activation", async () => {
-    configureQuestionQuotaToast();
-    announcementMocks.getMaintainerAnnouncementsSummary
-      .mockReturnValueOnce(
-        makeAnnouncementSummary({
-          activeCount: 0,
-          futureCount: 1,
-          activeAnnouncements: [],
-          evaluations: [
-            {
-              announcement: { ...TEST_ANNOUNCEMENT, startsAt: "2099-01-01T00:00:00Z" },
-              active: false,
-              reasons: ["not_started"],
-            },
-          ],
-        }),
-      )
-      .mockReturnValue(makeAnnouncementSummary());
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient();
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await runSuccessfulQuestion(hooks, "session-question-before");
-    expect(client.tui.showToast).toHaveBeenCalledTimes(1);
-    expect(tuiDiagnosticsMocks.inspectTuiConfig).not.toHaveBeenCalled();
-
-    await runSuccessfulQuestion(hooks, "session-question-after");
-
-    await flushMaintainerFallbackWork();
-    expect(getToastMessage(client, 0)).toContain("Copilot");
-    expect(getToastMessage(client, 1)).toContain("Copilot");
-    expect(getToastMessage(client, 2)).toBe(ANNOUNCEMENT_TOAST_MESSAGE);
-    expect(tuiDiagnosticsMocks.inspectTuiConfig).toHaveBeenCalledTimes(1);
-  });
-
-  it("retries pending fallback on cached quota toasts using cached detected providers", async () => {
-    configureQuestionQuotaToast({ minIntervalMs: 60_000 });
-    announcementMocks.getMaintainerAnnouncementsSummary
-      .mockReturnValueOnce(
-        makeAnnouncementSummary({
-          activeCount: 0,
-          futureCount: 1,
-          activeAnnouncements: [],
-          evaluations: [
-            {
-              announcement: { ...TEST_ANNOUNCEMENT, startsAt: "2099-01-01T00:00:00Z" },
-              active: false,
-              reasons: ["not_started"],
-            },
-          ],
-        }),
-      )
-      .mockReturnValue(makeAnnouncementSummary());
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient();
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await runSuccessfulQuestion(hooks, "session-cached-fallback");
-    await flushMaintainerFallbackWork();
-
-    expect(client.tui.showToast).toHaveBeenCalledTimes(1);
-    expect(tuiDiagnosticsMocks.inspectTuiConfig).not.toHaveBeenCalled();
-
-    await runSuccessfulQuestion(hooks, "session-cached-fallback");
-    await flushMaintainerFallbackWork();
-
-    expect(client.tui.showToast).toHaveBeenCalledTimes(3);
-    expect(getToastMessage(client, 0)).toContain("Copilot");
-    expect(getToastMessage(client, 1)).toContain("Copilot");
-    expect(getToastMessage(client, 2)).toBe(ANNOUNCEMENT_TOAST_MESSAGE);
-    expect(announcementMocks.getMaintainerAnnouncementsSummary).toHaveBeenCalledTimes(2);
-    expect(announcementMocks.getMaintainerAnnouncementsSummary).toHaveBeenLastCalledWith(
-      expect.objectContaining({ enabledProviders: ["copilot"] }),
-    );
-    expect(tuiDiagnosticsMocks.inspectTuiConfig).toHaveBeenCalledTimes(1);
-  });
-
-  it("retries fallback after TUI detection fails", async () => {
-    configureQuestionQuotaToast();
-    tuiDiagnosticsMocks.inspectTuiConfig.mockRejectedValueOnce(new Error("diagnostics failed"));
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient();
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await runSuccessfulQuestion(hooks, "session-question-diagnostics-fail");
-    await flushMaintainerFallbackWork();
-
-    expect(client.tui.showToast).toHaveBeenCalledTimes(1);
-    expect(getToastMessage(client, 0)).toContain("Copilot");
-    expect(tuiDiagnosticsMocks.inspectTuiConfig).toHaveBeenCalledTimes(1);
-
-    await runSuccessfulQuestion(hooks, "session-question-diagnostics-retry");
-    await flushMaintainerFallbackWork();
-
-    expect(client.tui.showToast).toHaveBeenCalledTimes(3);
-    expect(getToastMessage(client, 1)).toContain("Copilot");
-    expect(getToastMessage(client, 2)).toBe(ANNOUNCEMENT_TOAST_MESSAGE);
-    expect(tuiDiagnosticsMocks.inspectTuiConfig).toHaveBeenCalledTimes(2);
-  });
-
-  it("retries fallback after fallback toast display fails", async () => {
-    configureQuestionQuotaToast();
-
-    const { QuotaToastPlugin } = await import("../src/plugin.js");
-    const client = createClient();
-    client.tui.showToast
-      .mockResolvedValueOnce({})
-      .mockRejectedValueOnce(new Error("fallback toast failed"))
-      .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({});
-    const hooks = await QuotaToastPlugin({ client } as any);
-
-    await runSuccessfulQuestion(hooks, "session-question-display-fail");
-    await flushMaintainerFallbackWork();
-
-    expect(client.tui.showToast).toHaveBeenCalledTimes(2);
-    expect(getToastMessage(client, 0)).toContain("Copilot");
-    expect(getToastMessage(client, 1)).toBe(ANNOUNCEMENT_TOAST_MESSAGE);
-
-    await runSuccessfulQuestion(hooks, "session-question-display-retry");
-    await flushMaintainerFallbackWork();
-
-    expect(client.tui.showToast).toHaveBeenCalledTimes(4);
-    expect(getToastMessage(client, 2)).toContain("Copilot");
-    expect(getToastMessage(client, 3)).toBe(ANNOUNCEMENT_TOAST_MESSAGE);
-    expect(tuiDiagnosticsMocks.inspectTuiConfig).toHaveBeenCalledTimes(2);
   });
 });

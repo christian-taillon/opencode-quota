@@ -1,4 +1,4 @@
-import { mkdir, readdir, rm, writeFile } from "fs/promises";
+import { access, mkdir, readdir, readFile, rm, writeFile } from "fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { validateQuotaProviders } from "../src/lib/quota-providers.js";
@@ -888,6 +888,129 @@ describe("quota-state shared cache", () => {
     expect(provider.fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps malformed JSON as a quiet cache miss without removing it before refetch", async () => {
+    const quotaStateA = await import("../src/lib/quota-state.js");
+    quotaStateA.__resetQuotaStateForTests();
+
+    let resolveFetch: ((value: any) => void) | undefined;
+    const provider = {
+      id: "synthetic",
+      isAvailable: vi.fn(),
+      fetch: vi
+        .fn()
+        .mockResolvedValueOnce({
+          attempted: true,
+          entries: [{ accounting: TEST_ACCOUNTING, name: "Cached", percentRemaining: 55 }],
+          errors: [],
+        })
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveFetch = resolve;
+            }),
+        ),
+    } as any;
+    const ctx = createTestContext();
+    const key = quotaStateA.buildQuotaProviderStateCacheKey(provider.id, ctx);
+    const path = quotaStateA.getQuotaProviderStateCacheFilePath(provider.id, key);
+
+    await quotaStateA.fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    await writeFile(path, "{ definitely-not-json", "utf-8");
+
+    vi.resetModules();
+    const quotaStateB = await import("../src/lib/quota-state.js");
+    const pending = quotaStateB.fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    await vi.waitFor(() => expect(provider.fetch).toHaveBeenCalledTimes(2));
+
+    await expect(readFile(path, "utf-8")).resolves.toBe("{ definitely-not-json");
+
+    resolveFetch?.({ attempted: false, entries: [], errors: [] });
+    await pending;
+  });
+
+  it("removes a parsed structurally invalid cache entry before refetch", async () => {
+    const quotaStateA = await import("../src/lib/quota-state.js");
+    quotaStateA.__resetQuotaStateForTests();
+
+    let resolveFetch: ((value: any) => void) | undefined;
+    const provider = {
+      id: "synthetic",
+      isAvailable: vi.fn(),
+      fetch: vi
+        .fn()
+        .mockResolvedValueOnce({
+          attempted: true,
+          entries: [{ accounting: TEST_ACCOUNTING, name: "Cached", percentRemaining: 55 }],
+          errors: [],
+        })
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveFetch = resolve;
+            }),
+        ),
+    } as any;
+    const ctx = createTestContext();
+    const key = quotaStateA.buildQuotaProviderStateCacheKey(provider.id, ctx);
+    const path = quotaStateA.getQuotaProviderStateCacheFilePath(provider.id, key);
+
+    await quotaStateA.fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    await writeFile(path, JSON.stringify({ version: 2, key }), "utf-8");
+
+    vi.resetModules();
+    const quotaStateB = await import("../src/lib/quota-state.js");
+    const pending = quotaStateB.fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    await vi.waitFor(() => expect(provider.fetch).toHaveBeenCalledTimes(2));
+
+    await expect(access(path)).rejects.toMatchObject({ code: "ENOENT" });
+
+    resolveFetch?.({ attempted: false, entries: [], errors: [] });
+    await pending;
+  });
+
+  it("leaves a valid expired cache entry in place while refetching", async () => {
+    const quotaStateA = await import("../src/lib/quota-state.js");
+    quotaStateA.__resetQuotaStateForTests();
+
+    let resolveFetch: ((value: any) => void) | undefined;
+    const provider = {
+      id: "synthetic",
+      isAvailable: vi.fn(),
+      fetch: vi
+        .fn()
+        .mockResolvedValueOnce({
+          attempted: true,
+          entries: [{ accounting: TEST_ACCOUNTING, name: "Cached", percentRemaining: 55 }],
+          errors: [],
+        })
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveFetch = resolve;
+            }),
+        ),
+    } as any;
+    const ctx = createTestContext();
+    const key = quotaStateA.buildQuotaProviderStateCacheKey(provider.id, ctx);
+    const path = quotaStateA.getQuotaProviderStateCacheFilePath(provider.id, key);
+
+    await quotaStateA.fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    const persisted = JSON.parse(await readFile(path, "utf-8"));
+    persisted.timestamp = Date.now() - 120_000;
+    await writeFile(path, JSON.stringify(persisted), "utf-8");
+
+    vi.resetModules();
+    const quotaStateB = await import("../src/lib/quota-state.js");
+    const pending = quotaStateB.fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    await vi.waitFor(() => expect(provider.fetch).toHaveBeenCalledTimes(2));
+
+    await expect(access(path)).resolves.toBeUndefined();
+    expect(JSON.parse(await readFile(path, "utf-8")).timestamp).toBe(persisted.timestamp);
+
+    resolveFetch?.({ attempted: false, entries: [], errors: [] });
+    await pending;
+  });
+
   it("keeps cache read and write failures nonfatal", async () => {
     const quotaState = await import("../src/lib/quota-state.js");
     quotaState.__resetQuotaStateForTests();
@@ -934,7 +1057,7 @@ describe("quota-state shared cache", () => {
     await writeFile(
       path,
       JSON.stringify({
-        version: 1,
+        version: 2,
         packageVersion: "0.0.0-stale-cache",
         key,
         providerId: provider.id,

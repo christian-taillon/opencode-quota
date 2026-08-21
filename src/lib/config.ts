@@ -71,6 +71,7 @@ export const QUOTA_TOAST_SETTING_SOURCE_KEYS = [
   "sessionTokenScope",
   "tuiSidebarPanel.enabled",
   "tuiSidebarPanel.formatStyle",
+  "tuiSidebarPanel.opencodeGoPreferredWindow",
   "tuiCompactStatus.enabled",
   "tuiCompactStatus.homeBottom",
   "tuiCompactStatus.sessionPrompt",
@@ -266,16 +267,21 @@ function isValidCursorBillingCycleStartDay(value: unknown): value is number {
 
 const VALID_OPENCODE_GO_WINDOWS = ["rolling", "weekly", "monthly"] as const;
 
+function isValidOpenCodeGoWindow(
+  value: unknown,
+): value is QuotaToastConfig["opencodeGoWindows"][number] {
+  return (
+    typeof value === "string" &&
+    VALID_OPENCODE_GO_WINDOWS.includes(value as (typeof VALID_OPENCODE_GO_WINDOWS)[number])
+  );
+}
+
 function isValidOpenCodeGoWindows(
   value: unknown,
 ): value is Array<"rolling" | "weekly" | "monthly"> {
   if (!Array.isArray(value)) return false;
   if (value.length === 0) return false;
-  return value.every(
-    (v) =>
-      typeof v === "string" &&
-      VALID_OPENCODE_GO_WINDOWS.includes(v as (typeof VALID_OPENCODE_GO_WINDOWS)[number]),
-  );
+  return value.every(isValidOpenCodeGoWindow);
 }
 
 function normalizeOptionalString(value: unknown): string | undefined {
@@ -488,6 +494,13 @@ function extractTuiSidebarPanelPatch(value: unknown): TuiSidebarPanelPatch | und
   const sidebarFormatStyle = getExplicitFormatStyle(value);
   if (sidebarFormatStyle) {
     patch.formatStyle = sidebarFormatStyle;
+  }
+
+  if (
+    hasOwnKey(value, "opencodeGoPreferredWindow") &&
+    isValidOpenCodeGoWindow(value.opencodeGoPreferredWindow)
+  ) {
+    patch.opencodeGoPreferredWindow = value.opencodeGoPreferredWindow;
   }
 
   return Object.keys(patch).length > 0 ? patch : undefined;
@@ -1063,6 +1076,11 @@ function applyValidatedQuotaToastPatch(
     if (hasOwnKey(patch.tuiSidebarPanel, "formatStyle")) {
       config.tuiSidebarPanel.formatStyle = patch.tuiSidebarPanel.formatStyle!;
       applySettingSource(settingSources, "tuiSidebarPanel.formatStyle", sourcePath);
+    }
+    if (hasOwnKey(patch.tuiSidebarPanel, "opencodeGoPreferredWindow")) {
+      config.tuiSidebarPanel.opencodeGoPreferredWindow =
+        patch.tuiSidebarPanel.opencodeGoPreferredWindow!;
+      applySettingSource(settingSources, "tuiSidebarPanel.opencodeGoPreferredWindow", sourcePath);
     }
   }
 

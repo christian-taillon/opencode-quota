@@ -28,6 +28,7 @@ Strict `.json` files also work. Run `/quota_status` if you are unsure which file
 | Show slash results with messages           | `tuiCommandDisplay: "inline"` |
 | Show slash results in a TUI popup          | `tuiCommandDisplay: "dialog"` |
 | Turn the TUI sidebar on or off             | `tuiSidebarPanel.enabled`     |
+| Prefer an OpenCode Go collapsed row        | `tuiSidebarPanel.opencodeGoPreferredWindow` |
 | Turn popup quota notifications on or off   | `enableToast`                 |
 | Notify when weekly quota resets            | `resetNotifications.enabled`  |
 | Turn the compact quota line on or off      | `tuiCompactStatus.enabled`    |
@@ -52,8 +53,11 @@ The installer chooses `allWindows` by default. If the setting is absent, the bui
   // Keep TUI slash-command results with normal messages.
   "tuiCommandDisplay": "inline",
 
-  // Show the sidebar, but not toast or compact status.
-  "tuiSidebarPanel": { "enabled": true },
+  // Show the sidebar and prefer OpenCode Go's Five-hour row while collapsed.
+  "tuiSidebarPanel": {
+    "enabled": true,
+    "opencodeGoPreferredWindow": "rolling",
+  },
   "enableToast": false,
   "resetNotifications": { "enabled": false, "windows": ["weekly"] },
   "tuiCompactStatus": { "enabled": false },
@@ -375,6 +379,7 @@ Existing `experimental.quotaToast` settings remain supported. Quota settings do 
 | `tuiCommandDisplay`                                | `"inline"`           | Choose where deterministic native TUI command output appears. `inline` adds an ignored/no-reply plain-text message to the active transcript and uses a dialog on Home; `dialog` always opens the local popup. |
 | `tuiSidebarPanel.enabled`                          | `true`               | Show the Sidebar `Quota` panel when the TUI plugin is installed. Click the panel header to toggle its collapsed/expanded window layout; OpenCode remembers the last state. This is not an `accountingDetail` override. |
 | `tuiSidebarPanel.formatStyle`                      | (root `formatStyle`) | Override `formatStyle` for the Sidebar panel only. Useful when you want `allWindows` detail in the sidebar but a different style elsewhere.                                                                   |
+| `tuiSidebarPanel.opencodeGoPreferredWindow`        | unset                | Prefer `rolling` (Five-hour), `weekly`, or `monthly` for OpenCode Go only while the sidebar is collapsed. If unset or unavailable, the lowest-remaining window is used. Expanded rows still follow `opencodeGoWindows`. |
 | `tuiCompactStatus.enabled`                         | `false`              | Opt in to Compact status line UI surfaces.                                                                                                                                                                    |
 | `tuiCompactStatus.homeBottom`                      | `true`               | Show the Compact status line at the home bottom location.                                                                                                                                                     |
 | `tuiCompactStatus.sessionPrompt`                   | `true`               | Show the Compact status line by wrapping the TUI session prompt. Disable this if you only want the home-bottom line.                                                                                          |
@@ -396,7 +401,7 @@ Existing `experimental.quotaToast` settings remain supported. Quota settings do 
 | ---------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `anthropicBinaryPath`        | `"claude"`                         | Command/path used for local Claude CLI probing.                                                      |
 | `googleModels`               | `["CLAUDE"]`                       | Google model keys to query: `CLAUDE`, `G3PRO`, `G3FLASH`, `G3IMAGE`, `GPTOSS`.                       |
-| `opencodeGoWindows`          | `["rolling", "weekly", "monthly"]` | Display filter for validated OpenCode Go API results: 5h, Weekly, and Monthly.                         |
+| `opencodeGoWindows`          | `["rolling", "weekly", "monthly"]` | Choose which validated OpenCode Go API results are available across surfaces and in the expanded sidebar: Five-hour, Weekly, and Monthly. |
 | `opencodeMonthlyLimit`       | unset                              | Override the OpenCode Zen monthly budget in USD.                                                     |
 | `cursorPlan`                 | `"none"`                           | Cursor included API budget preset: `none`, `pro`, `pro-plus`, `ultra`.                               |
 | `cursorIncludedApiUsd`       | unset                              | Override Cursor monthly included API budget in USD.                                                  |
@@ -406,7 +411,7 @@ Kilo Gateway has no `quota-toast.json` credential setting. Use `KILO_API_KEY`, t
 
 Ollama Cloud has no `quota-toast.json` credential setting. Use `OLLAMA_API_KEY`, trusted user/global `provider.ollama-cloud.options.apiKey`, or a strict `ollama-cloud` API-key entry in OpenCode `auth.json`; project-local OpenCode config is not read for this secret. See [Ollama Cloud setup](providers.md#ollama-cloud).
 
-OpenCode Go has no `quota-toast.json` workspace ID, cookie, endpoint, credential, or token setting. It automatically uses `OPENCODE_API_KEY`, trusted user/global `provider.opencode.options.apiKey`, or a strict `opencode-go` API-key entry in OpenCode `auth.json`, with legacy `opencode` supported only as a fallback. `opencodeGoWindows` only filters the 5h, Weekly, and Monthly rows returned by the official usage API. See [OpenCode Go setup](providers.md#opencode-go).
+OpenCode Go has no `quota-toast.json` workspace ID, cookie, endpoint, credential, or token setting. It automatically uses `OPENCODE_API_KEY`, trusted user/global `provider.opencode.options.apiKey`, or a strict `opencode-go` API-key entry in OpenCode `auth.json`, with legacy `opencode` supported only as a fallback. `opencodeGoWindows` filters the Five-hour, Weekly, and Monthly rows returned by the official usage API, including the expanded sidebar. Use `tuiSidebarPanel.opencodeGoPreferredWindow` to prefer one available row only while the sidebar is collapsed. See [OpenCode Go setup](providers.md#opencode-go).
 
 Xiaomi MiMo has no `quota-toast.json` credential or endpoint setting. Use `MIMO_USAGE_COOKIE` or trusted user/global `opencode-quota/mimo.json`; see [Xiaomi MiMo setup](providers.md#xiaomi-mimo).
 

@@ -1099,8 +1099,13 @@ describe("tui plugin smoke", () => {
     loadTuiSessionQuotaSurfaces.mockResolvedValueOnce({
       sidebar: {
         status: "ready",
-        lines: ["Copilot 5h 82%"],
-        linesExpanded: ["[Copilot]", "5h window 82%", "Weekly window 58%"],
+        lines: ["OpenCode Go Five-hour 98%"],
+        linesExpanded: [
+          "[OpenCode Go]",
+          "Five-hour window 98%",
+          "Weekly window 53%",
+          "Monthly window 33%",
+        ],
         providerCount: 2,
       },
       compact: { status: "ready", text: "Session quota" },
@@ -1138,7 +1143,7 @@ describe("tui plugin smoke", () => {
     expect(collapsedHeader.props.children[1].props.children).toEqual([" (", 2, " providers)"]);
     expect(
       collapsed.props.children[1].props.children.map((line: any) => line.props.children),
-    ).toEqual(["Copilot 5h 82%"]);
+    ).toEqual(["OpenCode Go Five-hour 98%"]);
 
     collapsedHeader.props.children[0].props.onMouseDown();
 
@@ -1152,7 +1157,7 @@ describe("tui plugin smoke", () => {
     expect(expandedHeader.props.children[0].props.children.props.children).toBe("▼ Quota");
     expect(
       expanded.props.children[1].props.children.map((line: any) => line.props.children),
-    ).toEqual(["[Copilot]", "5h window 82%", "Weekly window 58%"]);
+    ).toEqual(["[OpenCode Go]", "Five-hour window 98%", "Weekly window 53%", "Monthly window 33%"]);
   });
 
   it("keeps non-expandable empty sidebar panels visible while collapsed", async () => {

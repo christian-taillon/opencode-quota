@@ -328,6 +328,7 @@ describe("loadConfig layered precedence", () => {
           quotaToast: {
             tuiSidebarPanel: {
               enabled: false,
+              opencodeGoPreferredWindow: "rolling",
             },
           },
         },
@@ -342,6 +343,7 @@ describe("loadConfig layered precedence", () => {
           quotaToast: {
             tuiSidebarPanel: {
               enabled: "yes",
+              opencodeGoPreferredWindow: "daily",
             },
           },
         },
@@ -352,8 +354,14 @@ describe("loadConfig layered precedence", () => {
     const meta = createLoadConfigMeta();
     const cfg = await loadConfig(undefined, meta, { cwd: workspaceDir });
 
-    expect(cfg.tuiSidebarPanel).toEqual({ enabled: false });
+    expect(cfg.tuiSidebarPanel).toEqual({
+      enabled: false,
+      opencodeGoPreferredWindow: "rolling",
+    });
     expect(meta.settingSources["tuiSidebarPanel.enabled"]).toBe(
+      quotaConfigSource(join(xdgConfigHome, "opencode")),
+    );
+    expect(meta.settingSources["tuiSidebarPanel.opencodeGoPreferredWindow"]).toBe(
       quotaConfigSource(join(xdgConfigHome, "opencode")),
     );
   });
