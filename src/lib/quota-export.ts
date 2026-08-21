@@ -1,6 +1,6 @@
 import { homedir } from "os";
 import { join } from "path";
-import { formatAccountingBoolean, formatAccountingQuantity } from "./accounting-format.js";
+import { interpretAccountingRow } from "./accounting-format.js";
 import { writeJsonAtomic } from "./atomic-json.js";
 import { sanitizeSingleLineDisplaySnippet } from "./display-sanitize.js";
 import type {
@@ -10,7 +10,6 @@ import type {
   QuotaProviderResult,
   QuotaToastEntry,
 } from "./entries.js";
-import { isBooleanEntry, isPercentEntry, isQuantityEntry, isValueEntry } from "./entries.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import { classifyQuotaWindowText } from "./quota-entry-display.js";
 import type {
@@ -124,6 +123,7 @@ function getExportWindow(entry: QuotaToastEntry): string | undefined {
 }
 
 function toExportEntry(entry: QuotaToastEntry): QuotaExportEntry {
+  const interpretation = interpretAccountingRow(entry, { booleanWording: "generic" });
   const window = getExportWindow(entry);
   const resetAt = unixSecondsFromIso(entry.resetTimeIso);
   const observedAt = unixSecondsFromIso(entry.accounting.observedAtIso);
@@ -139,17 +139,14 @@ function toExportEntry(entry: QuotaToastEntry): QuotaExportEntry {
     ...(resetAt !== undefined ? { resetAt } : {}),
   };
 
-  if (isPercentEntry(entry)) {
-    return { ...base, renderType: "percent", percentRemaining: entry.percentRemaining };
+  if (interpretation.display.kind === "percent") {
+    return {
+      ...base,
+      renderType: "percent",
+      percentRemaining: interpretation.display.percentRemaining,
+    };
   }
-  if (isValueEntry(entry)) return { ...base, renderType: "value", value: entry.value };
-  if (isQuantityEntry(entry)) {
-    return { ...base, renderType: "value", value: formatAccountingQuantity(entry.quantity) };
-  }
-  if (isBooleanEntry(entry)) {
-    return { ...base, renderType: "value", value: formatAccountingBoolean(entry.value) };
-  }
-  return entry satisfies never;
+  return { ...base, renderType: "value", value: interpretation.display.text };
 }
 
 function buildQuotaProviderStatuses(params: {

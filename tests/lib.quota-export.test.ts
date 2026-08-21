@@ -211,6 +211,53 @@ describe("buildQuotaExport", () => {
     }
   });
 
+  it("exports semantic availability booleans with generic wording and the raw name", async () => {
+    mockReadCachedProviderResult.mockResolvedValue({
+      hit: true,
+      result: {
+        attempted: true,
+        entries: [
+          {
+            accounting: { ...QUOTA_ACCOUNTING, resultType: "status" },
+            kind: "boolean",
+            name: "Raw provider availability",
+            value: false,
+            semantic: {
+              metric: { kind: "named", name: "Availability" },
+              prominence: "primary",
+            },
+          },
+        ],
+        errors: [],
+      },
+      timestamp: Date.now(),
+    });
+
+    const exportData = await buildQuotaExport({
+      providers: [createMockProvider("availability")],
+      ctx: createMockContext(),
+      ttlMs: 60_000,
+      fromCache: true,
+    });
+
+    const provider = exportData.providers.availability;
+    expect(provider).toBeDefined();
+    if (provider.status === "ok") {
+      expect(provider.entries).toEqual([
+        {
+          name: "Raw provider availability",
+          resultType: "status",
+          acquisitionMethod: "remote_api",
+          ownership: "maintained",
+          authority: "provider_reported",
+          renderType: "value",
+          value: "Disabled",
+        },
+      ]);
+      expect(provider.entries[0]).not.toHaveProperty("semantic");
+    }
+  });
+
   it("preserves raw Antigravity family names when display projections suppress them", async () => {
     mockReadCachedProviderResult.mockResolvedValue({
       hit: true,

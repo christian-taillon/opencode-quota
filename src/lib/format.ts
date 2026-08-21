@@ -2,15 +2,9 @@
  * Formatting helpers for quota toast output
  */
 
-import {
-  formatAccountingBasisDetails,
-  formatAccountingBasisSummary,
-  formatAccountingBoolean,
-  formatAccountingQuantity,
-  getAccountingEntryLabel,
-} from "./accounting-format.js";
+import { type AccountingRowInterpretation, interpretAccountingRow } from "./accounting-format.js";
 import type { QuotaToastEntry, QuotaToastError, SessionTokensData } from "./entries.js";
-import { isBooleanEntry, isPercentEntry, isQuantityEntry, isValueEntry } from "./entries.js";
+import { isPercentEntry } from "./entries.js";
 import {
   bar,
   DISPLAYED_PERCENT_LABEL_WIDTH,
@@ -279,15 +273,14 @@ export function formatQuotaRows(params: {
     );
   };
 
-  const addBasisLine = (entry: QuotaToastEntry) => {
-    if (isTiny || !isPercentEntry(entry) || !entry.basis) return;
-    const detail = params.accountingDetail ?? "summary";
+  const addBasisLine = (basis: AccountingRowInterpretation["basis"]) => {
+    if (!basis) return;
     const candidates =
-      detail === "detailed"
-        ? formatAccountingBasisDetails(entry.basis)
-        : [
-            formatAccountingBasisSummary(entry.basis, params.percentDisplayMode ?? "remaining"),
-          ].filter((value): value is string => Boolean(value));
+      basis.kind === "detailed"
+        ? basis.facts.map((fact) => fact.text)
+        : basis.text
+          ? [basis.text]
+          : [];
     let line = "";
     for (const candidate of candidates) {
       const next = line ? `${line} | ${candidate}` : candidate;
@@ -298,28 +291,42 @@ export function formatQuotaRows(params: {
   };
 
   for (const entry of params.entries ?? []) {
-    const semanticLabel = entry.semantic ? getAccountingEntryLabel(entry) : "";
+    const interpretation = interpretAccountingRow(entry, {
+      booleanWording: "semantic",
+      ...(!isTiny
+        ? {
+            basis:
+              (params.accountingDetail ?? "summary") === "detailed"
+                ? ({ kind: "detailed" } as const)
+                : ({
+                    kind: "summary",
+                    mode: params.percentDisplayMode ?? "remaining",
+                  } as const),
+          }
+        : {}),
+    });
     const name = entry.semantic
-      ? [entry.name.trim(), semanticLabel]
+      ? [entry.name.trim(), interpretation.label]
           .filter((part, index, parts) => Boolean(part) && parts.indexOf(part) === index)
           .join(" ")
       : isPercentEntry(entry)
         ? buildSingleWindowPercentEntryDisplayName(entry)
         : entry.name;
-    if (isValueEntry(entry)) {
-      addValueEntry(name, entry.resetTimeIso, entry.value);
-    } else if (isQuantityEntry(entry)) {
-      addValueEntry(name, entry.resetTimeIso, formatAccountingQuantity(entry.quantity), true);
-    } else if (isBooleanEntry(entry)) {
+    if (interpretation.display.kind === "value") {
       addValueEntry(
         name,
         entry.resetTimeIso,
-        formatAccountingBoolean(entry.value, entry.semantic),
-        true,
+        interpretation.display.text,
+        interpretation.display.entryKind !== "value",
       );
-    } else if (isPercentEntry(entry)) {
-      addPercentEntry(name, entry.resetTimeIso, entry.percentRemaining, entry.right);
-      addBasisLine(entry);
+    } else {
+      addPercentEntry(
+        name,
+        entry.resetTimeIso,
+        interpretation.display.percentRemaining,
+        entry.right,
+      );
+      addBasisLine(interpretation.basis);
     }
   }
 

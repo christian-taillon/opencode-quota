@@ -5,15 +5,9 @@
  * Designed to feel like a status dashboard while still respecting OpenCode toast width.
  */
 
-import {
-  formatAccountingBasisDetails,
-  formatAccountingBasisSummary,
-  formatAccountingBoolean,
-  formatAccountingQuantity,
-  getAccountingEntryLabel,
-} from "./accounting-format.js";
+import { interpretAccountingRow } from "./accounting-format.js";
 import type { QuotaToastEntry, QuotaToastError, SessionTokensData } from "./entries.js";
-import { isBooleanEntry, isPercentEntry, isQuantityEntry, isValueEntry } from "./entries.js";
+import { isPercentEntry } from "./entries.js";
 import {
   bar,
   DISPLAYED_PERCENT_LABEL_WIDTH,
@@ -51,8 +45,8 @@ function extractWindowLabel(text: string): string | null {
   return kind ? GROUPED_WINDOW_LABELS[kind] : null;
 }
 
-function resolveGroupedRowLabel(entry: QuotaToastEntry): string {
-  if (entry.semantic) return getAccountingEntryLabel(entry);
+function resolveGroupedRowLabel(entry: QuotaToastEntry, semanticLabel: string): string {
+  if (entry.semantic) return semanticLabel;
 
   const rawLabel = normalizeLabelText(entry.label);
   const fromLabel = extractWindowLabel(rawLabel);
@@ -124,26 +118,35 @@ export function formatQuotaRowsGrouped(params: {
     lines.push(formatGroupedHeader(g).slice(0, maxWidth));
 
     for (const entry of list) {
+      const interpretation = interpretAccountingRow(entry, {
+        booleanWording: "semantic",
+        ...(!isTiny
+          ? {
+              basis:
+                (params.accountingDetail ?? "summary") === "detailed"
+                  ? ({ kind: "detailed" } as const)
+                  : ({
+                      kind: "summary",
+                      mode: params.percentDisplayMode ?? "remaining",
+                    } as const),
+            }
+          : {}),
+      });
       const right = entry.right ? entry.right.trim() : "";
 
-      const structuredValue = isQuantityEntry(entry)
-        ? formatAccountingQuantity(entry.quantity)
-        : isBooleanEntry(entry)
-          ? formatAccountingBoolean(entry.value, entry.semantic)
-          : null;
-      if (isValueEntry(entry) || structuredValue !== null) {
-        const isAtomicValue = structuredValue !== null;
-        const label = entry.semantic
-          ? getAccountingEntryLabel(entry)
-          : entry.label?.trim() || entry.name;
+      if (interpretation.display.kind === "value") {
+        const isAtomicValue = interpretation.display.entryKind !== "value";
+        const label = entry.semantic ? interpretation.label : entry.label?.trim() || entry.name;
         const timeStr = entry.resetTimeIso
           ? formatResetCountdown(entry.resetTimeIso, {
               compactRounded: true,
               decimals: params.resetTimeDecimals,
             })
           : "";
-        const value = isValueEntry(entry) ? entry.value.trim() : structuredValue;
-        if (value === null) continue;
+        const value =
+          interpretation.display.entryKind === "value"
+            ? interpretation.display.text.trim()
+            : interpretation.display.text;
 
         if (isAtomicValue) {
           const suffix = [value, timeStr].filter(Boolean).join(separator);
@@ -202,9 +205,7 @@ export function formatQuotaRowsGrouped(params: {
         );
         continue;
       }
-      if (!isPercentEntry(entry)) continue;
-
-      const label = resolveGroupedRowLabel(entry);
+      const label = resolveGroupedRowLabel(entry, interpretation.label);
 
       // A "value row" has no explicit label and carries a `right` summary to be
       // shown instead of a name. When present, the `right` is justified to the
@@ -212,11 +213,11 @@ export function formatQuotaRowsGrouped(params: {
       const isValueRow =
         !entry.label?.trim() && !entry.metricLabel?.trim() && !!entry.right?.trim();
       const displayedPercent = resolveDisplayedPercent(
-        entry.percentRemaining,
+        interpretation.display.percentRemaining,
         params.percentDisplayMode,
       );
       const percentLabel = formatDisplayedPercentLabel(
-        entry.percentRemaining,
+        interpretation.display.percentRemaining,
         params.percentDisplayMode,
       );
 
@@ -224,7 +225,7 @@ export function formatQuotaRowsGrouped(params: {
       // Show reset countdown whenever quota is not fully available.
       // (i.e., any usage at all, or depleted)
       const timeStr =
-        entry.percentRemaining < 100
+        interpretation.display.percentRemaining < 100
           ? formatResetCountdown(entry.resetTimeIso, {
               compactRounded: true,
               decimals: params.resetTimeDecimals,
@@ -291,13 +292,13 @@ export function formatQuotaRowsGrouped(params: {
       const suffixCell = padLeft(percentLabel.slice(0, percentValueCol), percentValueCol);
       lines.push([barCell, suffixCell].join(separator));
 
-      if (entry.basis) {
+      if (interpretation.basis) {
         const candidates =
-          (params.accountingDetail ?? "summary") === "detailed"
-            ? formatAccountingBasisDetails(entry.basis)
-            : [
-                formatAccountingBasisSummary(entry.basis, params.percentDisplayMode ?? "remaining"),
-              ].filter((value): value is string => Boolean(value));
+          interpretation.basis.kind === "detailed"
+            ? interpretation.basis.facts.map((fact) => fact.text)
+            : interpretation.basis.text
+              ? [interpretation.basis.text]
+              : [];
         let detailLine = "";
         for (const candidate of candidates) {
           const next = detailLine ? `${detailLine} | ${candidate}` : candidate;

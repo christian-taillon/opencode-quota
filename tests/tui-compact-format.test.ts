@@ -447,6 +447,41 @@ describe("buildCompactQuotaStatusLine", () => {
     expect(wide).toContain("(Remaining: USD 94.25)");
   });
 
+  it("does not evaluate malformed basis for a suppressed non-finite semantic percent", () => {
+    const line = buildCompactQuotaStatusLine({
+      accountingDetail: "detailed",
+      maxWidth: 80,
+      data: {
+        entries: [
+          {
+            name: "monthly-budget",
+            group: "Zen",
+            accounting: {
+              resultType: "budget",
+              acquisitionMethod: "dashboard_scrape",
+              ownership: "maintained",
+              authority: "locally_derived",
+            },
+            semantic: {
+              metric: { kind: "window", window: "month" },
+              prominence: "primary",
+            },
+            percentRemaining: Number.POSITIVE_INFINITY,
+            basis: {
+              remaining: {
+                quantity: { decimal: "01", unit: { kind: "currency", code: "USD" } },
+                authority: "locally_derived",
+              },
+            },
+          },
+        ],
+        errors: [],
+      },
+    });
+
+    expect(line).toBe("");
+  });
+
   it("collapses whitespace, sanitizes control text, and truncates with ellipsis", () => {
     const line = buildCompactQuotaStatusLine({
       percentDisplayMode: "remaining",

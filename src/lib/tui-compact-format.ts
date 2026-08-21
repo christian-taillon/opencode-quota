@@ -1,12 +1,7 @@
-import {
-  formatAccountingBasisDetails,
-  formatAccountingBoolean,
-  formatAccountingQuantity,
-  getAccountingEntryLabel,
-} from "./accounting-format.js";
+import { interpretAccountingRow } from "./accounting-format.js";
 import { sanitizeQuotaRenderData, sanitizeSingleLineDisplayText } from "./display-sanitize.js";
 import type { QuotaToastEntry, QuotaToastError } from "./entries.js";
-import { isBooleanEntry, isPercentEntry, isQuantityEntry, isValueEntry } from "./entries.js";
+import { isPercentEntry, isValueEntry } from "./entries.js";
 import { formatDisplayedPercentLabel } from "./format-utils.js";
 import { formatGroupedHeader } from "./grouped-header-format.js";
 import { extractSingleWindowWindowLabel } from "./quota-entry-display.js";
@@ -135,53 +130,48 @@ function formatCompactPercentGroupSegment(group: CompactPercentGroup): string | 
   return compactText(`${group.provider}${separator}${summary}`);
 }
 
-function getSemanticValue(
-  entry: QuotaToastEntry,
-  percentDisplayMode: QuotaToastConfig["percentDisplayMode"],
-): string | null {
-  if (isPercentEntry(entry)) {
-    return Number.isFinite(entry.percentRemaining)
-      ? formatCompactPercentLabel(entry.percentRemaining, percentDisplayMode)
-      : null;
-  }
-  if (isQuantityEntry(entry)) return formatAccountingQuantity(entry.quantity);
-  if (isBooleanEntry(entry)) return formatAccountingBoolean(entry.value, entry.semantic);
-  if (isValueEntry(entry)) return compactText(entry.value);
-  return null;
-}
-
-function getCompactBasisDetail(
-  entry: QuotaToastEntry,
-  percentDisplayMode: QuotaToastConfig["percentDisplayMode"],
-): string | undefined {
-  if (!isPercentEntry(entry) || !entry.basis) return undefined;
-  const details = formatAccountingBasisDetails(entry.basis);
-  const prefix = percentDisplayMode === "used" ? "Used:" : "Remaining:";
-  return details.find((detail) => detail.startsWith(prefix));
-}
-
 function buildSemanticCandidate(
   entry: QuotaToastEntry,
   percentDisplayMode: QuotaToastConfig["percentDisplayMode"],
   accountingDetail: QuotaToastConfig["accountingDetail"],
 ): CompactCandidate | null {
   if (!entry.semantic) return null;
-  const value = getSemanticValue(entry, percentDisplayMode);
+  const shouldRequestBasis =
+    accountingDetail === "detailed" &&
+    isPercentEntry(entry) &&
+    Number.isFinite(entry.percentRemaining);
+  const interpretation = interpretAccountingRow(entry, {
+    booleanWording: "semantic",
+    ...(shouldRequestBasis ? { basis: { kind: "detailed" } as const } : {}),
+  });
+  const value =
+    interpretation.display.kind === "percent"
+      ? Number.isFinite(interpretation.display.percentRemaining)
+        ? formatCompactPercentLabel(interpretation.display.percentRemaining, percentDisplayMode)
+        : null
+      : interpretation.display.entryKind === "value"
+        ? compactText(interpretation.display.text)
+        : interpretation.display.text;
   if (!value) return null;
 
   const provider = getProviderName(entry);
-  const label = compactText(getAccountingEntryLabel(entry));
+  const label = compactText(interpretation.label);
   const prefix = compactText([provider, label].filter(Boolean).join(": "));
   const segment = compactText([prefix, value].filter(Boolean).join(" "));
   if (!segment) return null;
 
+  const detailRole = percentDisplayMode === "used" ? "used" : "remaining";
+  const detail =
+    interpretation.basis?.kind === "detailed"
+      ? interpretation.basis.facts.find((fact) => fact.role === detailRole)?.text
+      : undefined;
   return {
     segment,
     prominence: entry.semantic.prominence === "supplementary" ? 1 : 0,
-    ...(accountingDetail === "detailed"
-      ? { detail: getCompactBasisDetail(entry, percentDisplayMode) }
+    ...(detail ? { detail } : {}),
+    ...(interpretation.display.kind === "value" && interpretation.display.entryKind !== "value"
+      ? { atomic: { prefix, value } }
       : {}),
-    ...(isQuantityEntry(entry) || isBooleanEntry(entry) ? { atomic: { prefix, value } } : {}),
   };
 }
 

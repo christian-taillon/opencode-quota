@@ -7,15 +7,9 @@
  * - Includes session token summary (input/output per model)
  */
 
-import {
-  formatAccountingBasisDetails,
-  formatAccountingBasisSummary,
-  formatAccountingBoolean,
-  formatAccountingQuantity,
-  getAccountingEntryLabel,
-} from "./accounting-format.js";
+import { type AccountingRowInterpretation, interpretAccountingRow } from "./accounting-format.js";
 import type { QuotaToastEntry, QuotaToastError, SessionTokensData } from "./entries.js";
-import { isBooleanEntry, isPercentEntry, isQuantityEntry, isValueEntry } from "./entries.js";
+import { isValueEntry } from "./entries.js";
 import {
   bar,
   formatDisplayedPercentLabel,
@@ -78,8 +72,8 @@ function getCommandWindowLabel(entry: QuotaToastEntry): string | null {
   return kind ? (COMMAND_WINDOW_LABELS[kind] ?? null) : null;
 }
 
-function getCommandMetricLabel(entry: QuotaToastEntry): string {
-  if (entry.semantic) return getAccountingEntryLabel(entry);
+function getCommandMetricLabel(entry: QuotaToastEntry, semanticLabel: string): string {
+  if (entry.semantic) return semanticLabel;
 
   const window = getCommandWindowLabel(entry);
   const resultType = entry.accounting?.resultType;
@@ -117,25 +111,14 @@ function formatCommandDetails(entry: QuotaToastEntry, rightWidth: number): strin
   return "";
 }
 
-function getCommandValue(entry: QuotaToastEntry): string | null {
-  if (isValueEntry(entry)) return entry.value;
-  if (isQuantityEntry(entry)) return formatAccountingQuantity(entry.quantity);
-  if (isBooleanEntry(entry)) return formatAccountingBoolean(entry.value, entry.semantic);
-  return null;
-}
-
-function getCommandBasisLines(
-  entry: QuotaToastEntry,
-  accountingDetail: QuotaToastConfig["accountingDetail"],
-  percentDisplayMode: QuotaToastConfig["percentDisplayMode"],
-): string[] {
-  if (!isPercentEntry(entry) || !entry.basis) return [];
+function getCommandBasisLines(basis: AccountingRowInterpretation["basis"]): string[] {
+  if (!basis) return [];
   const details =
-    accountingDetail === "detailed"
-      ? formatAccountingBasisDetails(entry.basis)
-      : [formatAccountingBasisSummary(entry.basis, percentDisplayMode)].filter(
-          (detail): detail is string => Boolean(detail),
-        );
+    basis.kind === "detailed"
+      ? basis.facts.map((fact) => fact.text)
+      : basis.text
+        ? [basis.text]
+        : [];
   return details.map((detail) => `    ${detail}`);
 }
 
@@ -151,39 +134,49 @@ function buildQuotaCommandDocument(params: {
 
   const sections: ReportSection[] = groups.map((group, index) => {
     const lines: string[] = [];
-    const rightWidth = Math.max(0, ...group.entries.map((row) => row.right?.trim().length ?? 0));
+    const interpretedRows = group.entries.map((entry) => ({
+      entry,
+      interpretation: interpretAccountingRow(entry, {
+        booleanWording: "semantic",
+        basis:
+          (params.accountingDetail ?? "summary") === "detailed"
+            ? { kind: "detailed" }
+            : { kind: "summary", mode: params.percentDisplayMode ?? "remaining" },
+      }),
+    }));
+    const rightWidth = Math.max(
+      0,
+      ...interpretedRows.map(({ entry }) => entry.right?.trim().length ?? 0),
+    );
     const labelWidth = Math.max(
       QUOTA_COMMAND_LABEL_WIDTH,
-      ...group.entries
-        .filter((row) => Boolean(row.semantic))
-        .map((row) => getCommandMetricLabel(row).length),
+      ...interpretedRows
+        .filter(({ entry }) => Boolean(entry.semantic))
+        .map(
+          ({ entry, interpretation }) => getCommandMetricLabel(entry, interpretation.label).length,
+        ),
     );
-    for (const row of group.entries) {
-      const label = padRight(getCommandMetricLabel(row), labelWidth);
+    for (const { entry: row, interpretation } of interpretedRows) {
+      const label = padRight(getCommandMetricLabel(row, interpretation.label), labelWidth);
       const details = formatCommandDetails(row, rightWidth);
 
-      const value = getCommandValue(row);
-      if (value !== null) {
-        lines.push(`  ${label}  ${value}${details}`);
+      if (interpretation.display.kind === "value") {
+        lines.push(`  ${label}  ${interpretation.display.text}${details}`);
         continue;
       }
 
-      if (!isPercentEntry(row)) continue;
-      const pctLabel = formatDisplayedPercentLabel(row.percentRemaining, params.percentDisplayMode);
+      const pctLabel = formatDisplayedPercentLabel(
+        interpretation.display.percentRemaining,
+        params.percentDisplayMode,
+      );
       const displayedPercent = resolveDisplayedPercent(
-        row.percentRemaining,
+        interpretation.display.percentRemaining,
         params.percentDisplayMode,
       );
       lines.push(
         `  ${label}  ${bar(displayedPercent, QUOTA_COMMAND_BAR_WIDTH)}  ${padLeft(pctLabel, Math.max(9, pctLabel.length))}${details}`,
       );
-      lines.push(
-        ...getCommandBasisLines(
-          row,
-          params.accountingDetail ?? "summary",
-          params.percentDisplayMode ?? "remaining",
-        ),
-      );
+      lines.push(...getCommandBasisLines(interpretation.basis));
     }
     return {
       id: `group-${index}`,

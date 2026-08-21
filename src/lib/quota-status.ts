@@ -1,10 +1,6 @@
 import { stat } from "fs/promises";
 import { getProviders } from "../providers/registry.js";
-import {
-  formatAccountingBoolean,
-  formatAccountingQuantity,
-  formatAccountingSemanticLabel,
-} from "./accounting-format.js";
+import { interpretAccountingRow } from "./accounting-format.js";
 import {
   type LoadConfigIssue,
   QUOTA_TOAST_SETTING_SOURCE_KEYS,
@@ -21,7 +17,6 @@ import type {
   QuotaToastEntry,
   QuotaToastError,
 } from "./entries.js";
-import { isBooleanEntry, isPercentEntry, isQuantityEntry, isValueEntry } from "./entries.js";
 import type { MaintainerAnnouncementsSummary } from "./maintainer-announcements.js";
 import {
   getPricingRefreshPolicy,
@@ -267,15 +262,10 @@ function createProviderStatusSection(params: {
 function getCompactLiveProbeDescriptor(
   providerId: string,
   entry: QuotaToastEntry,
+  semanticLabel: string,
 ): string | undefined {
   if (entry.semantic) {
-    return sanitizeSingleLineDisplayText(
-      formatAccountingSemanticLabel(
-        entry.accounting.resultType,
-        entry.semantic,
-        entry.kind ?? "percent",
-      ),
-    );
+    return sanitizeSingleLineDisplayText(semanticLabel);
   }
 
   const candidates = [entry.label, entry.name, entry.group];
@@ -291,24 +281,25 @@ function getCompactLiveProbeDescriptor(
 }
 
 function formatCompactLiveProbeEntry(providerId: string, entry: QuotaToastEntry): string {
+  const interpretation = interpretAccountingRow(entry, { booleanWording: "semantic" });
   const parts: string[] = [];
-  const descriptor = getCompactLiveProbeDescriptor(providerId, entry);
+  const descriptor = getCompactLiveProbeDescriptor(providerId, entry, interpretation.label);
   if (descriptor) {
     parts.push(descriptor);
   }
 
-  if (isQuantityEntry(entry)) {
-    parts.push(`value=${formatAccountingQuantity(entry.quantity)}`);
-  } else if (isBooleanEntry(entry)) {
-    parts.push(`value=${formatAccountingBoolean(entry.value, entry.semantic)}`);
-  } else if (isValueEntry(entry)) {
-    parts.push(`value=${sanitizeSingleLineDisplayText(entry.value)}`);
-  } else if (isPercentEntry(entry)) {
+  if (interpretation.display.kind === "value") {
+    const value =
+      interpretation.display.entryKind === "value"
+        ? sanitizeSingleLineDisplayText(interpretation.display.text)
+        : interpretation.display.text;
+    parts.push(`value=${value}`);
+  } else {
     if (entry.right) {
       parts.push(sanitizeSingleLineDisplayText(entry.right));
     }
-    const percentRemaining = Number.isFinite(entry.percentRemaining)
-      ? Math.max(0, Math.min(100, Math.round(entry.percentRemaining)))
+    const percentRemaining = Number.isFinite(interpretation.display.percentRemaining)
+      ? Math.max(0, Math.min(100, Math.round(interpretation.display.percentRemaining)))
       : 0;
     parts.push(`percent_remaining=${percentRemaining}`);
   }

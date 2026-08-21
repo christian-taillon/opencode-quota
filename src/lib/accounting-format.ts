@@ -9,7 +9,7 @@ import type {
   AccountingWindow,
   QuotaToastEntry,
 } from "./entries.js";
-import { isPercentEntry } from "./entries.js";
+import { isBooleanEntry, isPercentEntry, isQuantityEntry, isValueEntry } from "./entries.js";
 
 const CANONICAL_DECIMAL_RE = /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u;
 
@@ -201,14 +201,30 @@ export function formatAccountingBasisSummary(
   return null;
 }
 
-export function formatAccountingBasisDetails(basis: AccountingPercentageBasis): string[] {
-  const details: string[] = [];
-  if (basis.used) details.push(`Used: ${formatAccountingQuantity(basis.used.quantity)}`);
-  if (basis.limit) details.push(`Limit: ${formatAccountingQuantity(basis.limit.quantity)}`);
-  if (basis.remaining) {
-    details.push(`Remaining: ${formatAccountingQuantity(basis.remaining.quantity)}`);
+export type AccountingBasisFact = {
+  role: "used" | "limit" | "remaining";
+  text: string;
+};
+
+function buildAccountingBasisFacts(basis: AccountingPercentageBasis): AccountingBasisFact[] {
+  const facts: AccountingBasisFact[] = [];
+  if (basis.used) {
+    facts.push({ role: "used", text: `Used: ${formatAccountingQuantity(basis.used.quantity)}` });
   }
-  return details;
+  if (basis.limit) {
+    facts.push({ role: "limit", text: `Limit: ${formatAccountingQuantity(basis.limit.quantity)}` });
+  }
+  if (basis.remaining) {
+    facts.push({
+      role: "remaining",
+      text: `Remaining: ${formatAccountingQuantity(basis.remaining.quantity)}`,
+    });
+  }
+  return facts;
+}
+
+export function formatAccountingBasisDetails(basis: AccountingPercentageBasis): string[] {
+  return buildAccountingBasisFacts(basis).map((fact) => fact.text);
 }
 
 export function formatAccountingResultTypeLabel(resultType: AccountingResultType): string {
@@ -276,4 +292,71 @@ export function getAccountingEntryLabel(entry: QuotaToastEntry): string {
     entry.semantic,
     isPercentEntry(entry) ? "percent" : entry.kind,
   );
+}
+
+export type AccountingBooleanWording = "semantic" | "generic";
+
+export type AccountingBasisRequest =
+  | { kind: "summary"; mode: AccountingBasisDisplayMode }
+  | { kind: "detailed" };
+
+export type AccountingRowInterpretation = {
+  label: string;
+  display:
+    | { kind: "percent"; percentRemaining: number }
+    | {
+        kind: "value";
+        entryKind: "value" | "quantity" | "boolean";
+        text: string;
+      };
+  basis?:
+    | { kind: "summary"; text: string | null }
+    | { kind: "detailed"; facts: readonly AccountingBasisFact[] };
+};
+
+export function interpretAccountingRow(
+  entry: QuotaToastEntry,
+  options: {
+    booleanWording: AccountingBooleanWording;
+    basis?: AccountingBasisRequest;
+  },
+): AccountingRowInterpretation {
+  const label = getAccountingEntryLabel(entry);
+  let display: AccountingRowInterpretation["display"];
+
+  if (isPercentEntry(entry)) {
+    display = { kind: "percent", percentRemaining: entry.percentRemaining };
+  } else if (isValueEntry(entry)) {
+    display = { kind: "value", entryKind: "value", text: entry.value };
+  } else if (isQuantityEntry(entry)) {
+    display = {
+      kind: "value",
+      entryKind: "quantity",
+      text: formatAccountingQuantity(entry.quantity),
+    };
+  } else if (isBooleanEntry(entry)) {
+    display = {
+      kind: "value",
+      entryKind: "boolean",
+      text: formatAccountingBoolean(
+        entry.value,
+        options.booleanWording === "semantic" ? entry.semantic : undefined,
+      ),
+    };
+  } else {
+    return entry satisfies never;
+  }
+
+  if (!isPercentEntry(entry) || !entry.basis || !options.basis) {
+    return { label, display };
+  }
+
+  const basis =
+    options.basis.kind === "summary"
+      ? {
+          kind: "summary" as const,
+          text: formatAccountingBasisSummary(entry.basis, options.basis.mode),
+        }
+      : { kind: "detailed" as const, facts: buildAccountingBasisFacts(entry.basis) };
+  return { label, display, basis };
 }

@@ -8,6 +8,7 @@ import {
   formatAccountingSemanticLabel,
   formatAccountingWindowLabel,
   getAccountingEntryLabel,
+  interpretAccountingRow,
   isCanonicalAccountingDecimal,
 } from "../src/lib/accounting-format.js";
 import type {
@@ -154,6 +155,135 @@ describe("accounting-format", () => {
         "boolean",
       ),
     ).toBe("Availability");
+  });
+
+  it("interprets every row kind with explicit boolean wording and raw percentages", () => {
+    const percent = interpretAccountingRow(
+      {
+        accounting: ACCOUNTING,
+        name: "raw percent",
+        percentRemaining: Number.POSITIVE_INFINITY,
+        semantic: { metric: { kind: "window", window: "week" }, prominence: "primary" },
+      },
+      { booleanWording: "semantic" },
+    );
+    expect(percent).toEqual({
+      label: "Weekly quota",
+      display: { kind: "percent", percentRemaining: Number.POSITIVE_INFINITY },
+    });
+
+    expect(
+      interpretAccountingRow(
+        { accounting: ACCOUNTING, kind: "value", name: "legacy", value: " exact " },
+        { booleanWording: "semantic" },
+      ),
+    ).toEqual({
+      label: "legacy",
+      display: { kind: "value", entryKind: "value", text: " exact " },
+    });
+    expect(
+      interpretAccountingRow(
+        {
+          accounting: { ...ACCOUNTING, resultType: "balance" },
+          kind: "quantity",
+          name: "balance",
+          quantity: usd("12.5"),
+          semantic: {
+            metric: { kind: "component", component: "total_balance" },
+            prominence: "primary",
+          },
+        },
+        { booleanWording: "semantic" },
+      ),
+    ).toEqual({
+      label: "Total balance",
+      display: { kind: "value", entryKind: "quantity", text: "USD 12.50" },
+    });
+
+    const availability = {
+      accounting: { ...ACCOUNTING, resultType: "status" as const },
+      kind: "boolean" as const,
+      name: "availability",
+      value: false,
+      semantic: {
+        metric: { kind: "named" as const, name: "Availability" },
+        prominence: "primary" as const,
+      },
+    };
+    expect(interpretAccountingRow(availability, { booleanWording: "semantic" }).display).toEqual({
+      kind: "value",
+      entryKind: "boolean",
+      text: "Low balance",
+    });
+    expect(interpretAccountingRow(availability, { booleanWording: "generic" }).display).toEqual({
+      kind: "value",
+      entryKind: "boolean",
+      text: "Disabled",
+    });
+  });
+
+  it("interprets basis only when requested and preserves typed fact order", () => {
+    const entry = {
+      accounting: ACCOUNTING,
+      name: "quota",
+      percentRemaining: 25,
+      basis: {
+        used: { quantity: usd("75"), authority: "provider_reported" as const },
+        limit: { quantity: usd("100"), authority: "provider_reported" as const },
+        remaining: { quantity: usd("25"), authority: "provider_reported" as const },
+      },
+    } satisfies QuotaToastEntry;
+
+    expect(
+      interpretAccountingRow(entry, {
+        booleanWording: "semantic",
+        basis: { kind: "summary", mode: "remaining" },
+      }).basis,
+    ).toEqual({ kind: "summary", text: "Remaining: USD 25.00" });
+    expect(
+      interpretAccountingRow(entry, {
+        booleanWording: "semantic",
+        basis: { kind: "summary", mode: "used" },
+      }).basis,
+    ).toEqual({ kind: "summary", text: "Used: USD 75.00" });
+    expect(
+      interpretAccountingRow(entry, {
+        booleanWording: "semantic",
+        basis: { kind: "detailed" },
+      }).basis,
+    ).toEqual({
+      kind: "detailed",
+      facts: [
+        { role: "used", text: "Used: USD 75.00" },
+        { role: "limit", text: "Limit: USD 100.00" },
+        { role: "remaining", text: "Remaining: USD 25.00" },
+      ],
+    });
+
+    const invalidBasis = {
+      ...entry,
+      basis: {
+        remaining: {
+          quantity: usd("01"),
+          authority: "provider_reported" as const,
+        },
+      },
+    };
+    expect(interpretAccountingRow(invalidBasis, { booleanWording: "semantic" })).not.toHaveProperty(
+      "basis",
+    );
+    expect(() =>
+      interpretAccountingRow(invalidBasis, {
+        booleanWording: "semantic",
+        basis: { kind: "detailed" },
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      interpretAccountingRow(
+        { accounting: ACCOUNTING, kind: "quantity", name: "bad", quantity: usd("01") },
+        { booleanWording: "semantic" },
+      ),
+    ).toThrow(TypeError);
   });
 
   it("orders result meanings, typed windows, and components while preserving named ties", () => {
