@@ -1,7 +1,8 @@
 /** @jsxImportSource @opentui/solid */
-import type { JSX } from "@opentui/solid";
+
 import { RGBA } from "@opentui/core";
-import { Show, createSignal, onCleanup } from "solid-js";
+import type { JSX } from "@opentui/solid";
+import { createSignal, onCleanup, Show } from "solid-js";
 
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
 import { formatQuotaRows } from "./lib/format.js";
@@ -10,13 +11,13 @@ import {
   QUOTA_DIALOG_COMMANDS,
   type QuotaDialogCommandId,
 } from "./lib/quota-dialog-commands.js";
+import { resolveQuotaFormatStyle } from "./lib/quota-format-style.js";
 import { collectQuotaRenderData } from "./lib/quota-render-data.js";
 import {
   createQuotaRuntimeRequestContext,
-  resolveQuotaRuntimeContext,
   type QuotaSessionModelContext,
+  resolveQuotaRuntimeContext,
 } from "./lib/quota-runtime-context.js";
-import { resolveQuotaFormatStyle } from "./lib/quota-format-style.js";
 import { buildSidebarQuotaPanelLines } from "./lib/tui-sidebar-format.js";
 
 const terminalForeground = RGBA.defaultForeground();
@@ -32,22 +33,25 @@ type TuiContext = {
   client: unknown;
   data: { on: (event: string, handler: (event: TuiEvent) => void) => () => void };
   keymap: {
-    layer: (build: () => {
-      mode: "global";
-      commands: Array<{
-        id: string;
-        title: string;
-        group: string;
-        palette: true;
-        slash: { name: string };
-        run: (input?: unknown) => void;
-      }>;
-    }) => void;
+    layer: (
+      build: () => {
+        mode: "global";
+        commands: Array<{
+          id: string;
+          title: string;
+          group: string;
+          palette: true;
+          slash: { name: string };
+          run: (input?: unknown) => void;
+        }>;
+      },
+    ) => void;
   };
   ui: {
-    slot: (claim:
-      | { append: "app"; render: () => null }
-      | { append: "sidebar.content"; render: (props: { sessionID: string }) => JSX.Element }
+    slot: (
+      claim:
+        | { append: "app"; render: () => null }
+        | { append: "sidebar.content"; render: (props: { sessionID: string }) => JSX.Element },
     ) => () => void;
     toast: { show: (toast: Toast) => void };
     dialog: {
@@ -244,7 +248,11 @@ function SidebarQuotaView(props: {
 
   return (
     <box flexDirection="column">
-      <box flexDirection="row" gap={1} onMouseDown={() => expandable() && setOpen((value) => !value)}>
+      <box
+        flexDirection="row"
+        gap={1}
+        onMouseDown={() => expandable() && setOpen((value) => !value)}
+      >
         <Show when={expandable()}>
           <text fg={terminalForeground}>{open() ? "▼" : "▶"}</text>
         </Show>
@@ -295,7 +303,9 @@ const plugin = {
             })
             .catch(reportFailure);
         };
-        const onStepEnded = context.data.on("session.step.ended", (event) => trigger(event, "idle"));
+        const onStepEnded = context.data.on("session.step.ended", (event) =>
+          trigger(event, "idle"),
+        );
         const onCompacted = context.data.on("session.compaction.ended", (event) =>
           trigger(event, "compacted"),
         );

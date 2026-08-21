@@ -4,11 +4,17 @@ import plugin from "../src/tui-v2.tsx";
 
 describe("V2 quota TUI commands", () => {
   it("registers every quota command as a local slash command", () => {
-    let layer: { commands: Array<{ slash: { name: string }; palette: boolean; run: () => void }> } | undefined;
+    let layer:
+      | { commands: Array<{ slash: { name: string }; palette: boolean; run: () => void }> }
+      | undefined;
     const context = {
       client: {},
       data: { on: vi.fn(() => vi.fn()) },
-      keymap: { layer: vi.fn((build) => (layer = build())) },
+      keymap: {
+        layer: vi.fn((build) => {
+          layer = build();
+        }),
+      },
       ui: {
         slot: vi.fn((claim) => {
           if (claim.append === "app") claim.render();
@@ -37,7 +43,9 @@ describe("V2 quota TUI commands", () => {
     ]);
     expect(layer?.commands.every((command) => command.palette)).toBe(true);
     expect(context.ui.slot).toHaveBeenCalledWith(expect.objectContaining({ append: "app" }));
-    expect(context.ui.slot).toHaveBeenCalledWith(expect.objectContaining({ append: "sidebar.content" }));
+    expect(context.ui.slot).toHaveBeenCalledWith(
+      expect.objectContaining({ append: "sidebar.content" }),
+    );
     expect(context.data.on.mock.calls.map(([event]) => event)).toEqual([
       "session.step.ended",
       "session.compaction.ended",
