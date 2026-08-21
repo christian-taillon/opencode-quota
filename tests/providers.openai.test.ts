@@ -134,7 +134,7 @@ describe("openai provider", () => {
       {
         index: 1,
         accountId: "personal-account",
-        accountLabel: "Personal",
+        accountLabel: "Personal (role:owner) [id:419b14]",
         accessToken: "cached-personal",
         sourceId: "openai-multi-auth:personal",
       },
@@ -163,14 +163,48 @@ describe("openai provider", () => {
     expectAttemptedWithNoErrors(out);
     expect(openai.queryOpenAIQuota).toHaveBeenCalledWith({ requestTimeoutMs: 12000 });
     expect(openai.queryOpenAIQuotaForCredential).toHaveBeenCalledTimes(2);
-    expect(out.entries.map((entry) => entry.group)).toEqual([
-      "OpenAI (Business)",
-      "OpenAI (Personal)",
-    ]);
+    expect(out.entries.map((entry) => entry.group)).toEqual(["OpenAI (Plus)", "OpenAI (Plus) #2"]);
     expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual([
       "openai-multi-auth:business",
       "openai-multi-auth:personal",
     ]);
+  });
+
+  it("numbers repeated plan labels across many subscriptions", async () => {
+    const multiAuth = await import("../src/lib/openai-multi-auth.js");
+    const openai = await import("../src/lib/openai.js");
+    (multiAuth.readOpenAIMultiAuthAccounts as any).mockResolvedValueOnce(
+      Array.from({ length: 6 }, (_, index) => ({
+        index,
+        accountId: `account-${index}`,
+        accountLabel: `Account ${index + 1} (role:owner) [id:${index}]`,
+        accessToken: `cached-${index}`,
+        sourceId: `openai-multi-auth:${index}`,
+      })),
+    );
+    (multiAuth.inspectOpenAIMultiAuthPresence as any).mockResolvedValueOnce({
+      state: "present",
+      accountCount: 6,
+      enabledAccountCount: 6,
+      cachedAccessTokenCount: 6,
+    });
+    (openai.queryOpenAIQuotaForCredential as any).mockResolvedValue({
+      success: true,
+      label: "OpenAI (Plus)",
+      windows: { weekly: { percentRemaining: 68 } },
+    });
+
+    const out = await openaiProvider.fetch({} as any);
+
+    expect(out.entries.map((entry) => entry.group)).toEqual([
+      "OpenAI (Plus)",
+      "OpenAI (Plus) #2",
+      "OpenAI (Plus) #3",
+      "OpenAI (Plus) #4",
+      "OpenAI (Plus) #5",
+      "OpenAI (Plus) #6",
+    ]);
+    expect(new Set(out.entries.map((entry) => entry.accounting.sourceId)).size).toBe(6);
   });
 
   it("keeps native quota and healthy multi-auth quota when one account lacks a cached token", async () => {

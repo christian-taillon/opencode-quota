@@ -71,13 +71,21 @@ function buildOpenAIEntries(
   });
 }
 
+function displayAccountLabel(label: string | undefined): string | undefined {
+  const cleaned = label
+    ?.replace(/\s+\(role:[^)]+\)/giu, "")
+    .replace(/\s+\[id:[^\]]+\]/giu, "")
+    .trim();
+  return cleaned || undefined;
+}
+
 function accountLabel(account: OpenAIMultiAuthAccount): string {
-  return account.accountLabel?.trim() || `Account ${account.index + 1}`;
+  return displayAccountLabel(account.accountLabel) || `Account ${account.index + 1}`;
 }
 
 function multiAuthGroup(account: OpenAIMultiAuthAccount, providerLabel: string): string {
   const planLabel = providerLabel.match(/^OpenAI\s*\((.*)\)$/)?.[1]?.trim();
-  return `OpenAI (${account.accountLabel?.trim() || planLabel || `Account ${account.index + 1}`})`;
+  return `OpenAI (${planLabel || accountLabel(account)})`;
 }
 
 function sameNativeAccount(

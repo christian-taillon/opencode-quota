@@ -152,7 +152,7 @@ function parseRateLimitWindow(
 }
 
 function derivePlanLabel(planType: string | undefined): string {
-  const displayPlanType = planType?.replace(/\s+\(role:[^)]+\)\s*$/iu, "").trim();
+  const displayPlanType = planType?.replace(/\s+\(role:[^)]+\)/giu, "").trim();
   const normalized = (displayPlanType ?? "").toLowerCase();
   if (normalized === "team" || normalized === "business") return "OpenAI (Business)";
   if (normalized.includes("pro")) return "OpenAI (Pro)";
