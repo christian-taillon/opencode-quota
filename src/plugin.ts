@@ -13,11 +13,6 @@ import { handled } from "./lib/command-handled.js";
 import { shouldRegisterServerSlashCommands } from "./lib/command-surfaces.js";
 import { findGitWorktreeRoot, getEffectiveConfigRoot } from "./lib/config-file-utils.js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
-import {
-  BUNDLED_MAINTAINER_ANNOUNCEMENTS,
-  formatMaintainerAnnouncementHomeCountLine,
-  getMaintainerAnnouncementsSummary,
-} from "./lib/maintainer-announcements.js";
 import { reconcileDetectedProvidersInGlobalConfig } from "./lib/opencode-config-providers.js";
 import {
   buildQuotaDialogCommandOutput,
@@ -26,18 +21,9 @@ import {
   type QuotaDialogCommandId,
 } from "./lib/quota-dialog-commands.js";
 import type { SessionModelMeta } from "./lib/quota-render-data.js";
-import {
-  formatQuotaResetNotification,
-  observeQuotaResetNotifications,
-} from "./lib/quota-reset-notifications.js";
 import type { SessionTokenError } from "./lib/quota-status.js";
 import { disposeQuotaTelemetryOwner } from "./lib/quota-telemetry.js";
-import {
-  createQuotaToastRuntime,
-  type QuotaToastEmissionPlan,
-  type QuotaToastRuntime,
-} from "./lib/quota-toast-runtime.js";
-import { inspectTuiConfig } from "./lib/tui-config-diagnostics.js";
+import { createQuotaToastRuntime } from "./lib/quota-toast-runtime.js";
 import type { QuotaToastConfig } from "./lib/types.js";
 
 // =============================================================================
@@ -202,11 +188,6 @@ export const QuotaToastPlugin: Plugin = async ({ client, directory }) => {
   // Track last session token error for /quota_status diagnostics
   let lastSessionTokenError: SessionTokenError | undefined;
 
-  const maintainerAnnouncementToastFallback = {
-    pending: true,
-    inFlight: false,
-  };
-
   function getPluginRuntimeRootHints() {
     const cwd = directory || process.cwd();
     const workspaceRoot = findGitWorktreeRoot(cwd) ?? cwd;
@@ -250,74 +231,6 @@ export const QuotaToastPlugin: Plugin = async ({ client, directory }) => {
     }
 
     handled();
-  }
-
-  function triggerMaintainerAnnouncementToastFallback(
-    trigger: string,
-    detectedProviderIds: string[],
-    config: QuotaToastConfig,
-  ): void {
-    if (
-      !maintainerAnnouncementToastFallback.pending ||
-      maintainerAnnouncementToastFallback.inFlight
-    ) {
-      return;
-    }
-
-    if (!config.enabled || !config.enableToast) {
-      maintainerAnnouncementToastFallback.pending = false;
-      return;
-    }
-
-    if (!config.maintainerAnnouncements.enabled || !config.maintainerAnnouncements.home) {
-      maintainerAnnouncementToastFallback.pending = false;
-      return;
-    }
-
-    maintainerAnnouncementToastFallback.inFlight = true;
-    void (async () => {
-      try {
-        const summary = getMaintainerAnnouncementsSummary({
-          announcements: BUNDLED_MAINTAINER_ANNOUNCEMENTS,
-          enabledProviders: detectedProviderIds,
-        });
-
-        if (summary.activeCount <= 0) {
-          if (summary.futureCount <= 0) {
-            maintainerAnnouncementToastFallback.pending = false;
-          }
-          return;
-        }
-
-        const tuiDiagnostics = await inspectTuiConfig({ roots: getPluginRuntimeRootHints() });
-        if (tuiDiagnostics.quotaPluginConfigured) {
-          maintainerAnnouncementToastFallback.pending = false;
-          return;
-        }
-
-        const message = formatMaintainerAnnouncementHomeCountLine(summary.activeCount);
-        if (!message) {
-          return;
-        }
-
-        await typedClient.tui.showToast({
-          body: {
-            message: sanitizeDisplayText(message),
-            variant: "info",
-            duration: config.toastDurationMs,
-          },
-        });
-        maintainerAnnouncementToastFallback.pending = false;
-        await log("Displayed maintainer announcement fallback toast", { trigger });
-      } catch (err) {
-        await log("Failed to show maintainer announcement fallback toast", {
-          trigger,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      } finally {
-        maintainerAnnouncementToastFallback.inFlight = false;
-      }
-    })();
   }
 
   /**
@@ -408,100 +321,7 @@ export const QuotaToastPlugin: Plugin = async ({ client, directory }) => {
     }
   }
 
-  async function emitQuotaToastPlan(params: {
-    sessionID: string;
-    trigger: string;
-    plan: QuotaToastEmissionPlan;
-  }): Promise<void> {
-    const { config, message, detectedProviderIds, freshProviderResults, deferredRetryResult } =
-      params.plan;
-    let resetNotification: string | undefined;
-    if (
-      config.enableToast &&
-      config.resetNotifications.enabled &&
-      freshProviderResults.length > 0
-    ) {
-      try {
-        const notices = await observeQuotaResetNotifications({
-          providers: freshProviderResults,
-          windows: config.resetNotifications.windows,
-        });
-        resetNotification = formatQuotaResetNotification(notices) ?? undefined;
-      } catch (error) {
-        await log("Failed to observe quota reset transitions", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    if (deferredRetryResult) {
-      await log("Deferred quota refresh did not produce reportable data", {
-        sessionID: params.sessionID,
-        trigger: params.trigger,
-        retryable: deferredRetryResult.retryable,
-        retryReason: deferredRetryResult.retryReason,
-      });
-      return;
-    }
-
-    if (!message) {
-      await log("No quota message to display", { trigger: params.trigger });
-      return;
-    }
-
-    if (!config.enableToast) {
-      await log("Toast disabled (enableToast=false)", { trigger: params.trigger });
-      return;
-    }
-
-    try {
-      await typedClient.tui.showToast({
-        body: {
-          message: sanitizeDisplayText(message),
-          variant: "info",
-          duration: config.toastDurationMs,
-        },
-      });
-      triggerMaintainerAnnouncementToastFallback(params.trigger, detectedProviderIds, config);
-      await log("Displayed quota toast", { message, trigger: params.trigger });
-      if (resetNotification) {
-        await typedClient.tui.showToast({
-          body: {
-            title: "Quota available",
-            message: sanitizeDisplayText(resetNotification),
-            variant: "success",
-            duration: config.toastDurationMs,
-          },
-        });
-        await log("Displayed quota reset notification", {
-          message: resetNotification,
-          trigger: params.trigger,
-        });
-      }
-    } catch (err) {
-      await log("Failed to show toast", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  let quotaToastRuntime: QuotaToastRuntime;
-
-  async function runQuotaToastTrigger(params: {
-    sessionID: string;
-    trigger: string;
-    deferredRetry?: boolean;
-  }): Promise<void> {
-    const plan = await quotaToastRuntime.prepareTrigger(params);
-    if (!plan) return;
-    try {
-      await emitQuotaToastPlan({ ...params, plan });
-    } finally {
-      plan.complete();
-    }
-  }
-
-  quotaToastRuntime = createQuotaToastRuntime({
+  const quotaToastRuntime = createQuotaToastRuntime({
     client: typedClient,
     roots: getPluginRuntimeRootHints,
     resolveSessionMeta: (sessionID) => getSessionModelMeta(sessionID),
@@ -510,6 +330,7 @@ export const QuotaToastPlugin: Plugin = async ({ client, directory }) => {
     setSessionTokenError: (error) => {
       lastSessionTokenError = error;
     },
+    showToast: (body) => typedClient.tui.showToast({ body }),
     log,
     onInitialized: (extra) => {
       void typedClient.app
@@ -523,12 +344,6 @@ export const QuotaToastPlugin: Plugin = async ({ client, directory }) => {
         })
         .catch(() => {});
     },
-    runDeferredTrigger: (sessionID) =>
-      runQuotaToastTrigger({
-        sessionID,
-        trigger: "deferred.retry",
-        deferredRetry: true,
-      }),
   });
 
   // Return hook implementations
@@ -607,14 +422,14 @@ export const QuotaToastPlugin: Plugin = async ({ client, directory }) => {
         return;
       }
 
-      await runQuotaToastTrigger({ sessionID, trigger: event.type });
+      await quotaToastRuntime.handleTrigger({ sessionID, trigger: event.type });
     },
 
     // Tool execute hook for question tool
     "tool.execute.after": async (input: ToolExecuteAfterInput, _output: ToolExecuteAfterOutput) => {
       if (input.tool !== "question") return;
 
-      await runQuotaToastTrigger({ sessionID: input.sessionID, trigger: "question" });
+      await quotaToastRuntime.handleTrigger({ sessionID: input.sessionID, trigger: "question" });
     },
   };
 };

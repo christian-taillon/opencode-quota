@@ -8,7 +8,13 @@ import { getOrFetchWithCacheControl } from "./cache.js";
 import { createLoadConfigMeta, type LoadConfigMeta } from "./config.js";
 import type { RuntimeContextRootHints } from "./config-file-utils.js";
 import { isCursorModelId, isCursorProviderId } from "./cursor-pricing.js";
+import { sanitizeDisplayText } from "./display-sanitize.js";
 import { formatQuotaRows } from "./format.js";
+import {
+  BUNDLED_MAINTAINER_ANNOUNCEMENTS,
+  formatMaintainerAnnouncementHomeCountLine,
+  getMaintainerAnnouncementsSummary,
+} from "./maintainer-announcements.js";
 import {
   maybeRefreshPricingSnapshot,
   setPricingSnapshotAutoRefresh,
@@ -22,6 +28,10 @@ import {
   type SessionModelMeta,
 } from "./quota-render-data.js";
 import {
+  formatQuotaResetNotification,
+  observeQuotaResetNotifications,
+} from "./quota-reset-notifications.js";
+import {
   createQuotaRuntimeRequestContext,
   type QuotaRuntimeClient,
   type QuotaRuntimeContext,
@@ -29,6 +39,7 @@ import {
 } from "./quota-runtime-context.js";
 import type { SessionTokenError } from "./quota-status.js";
 import { isQwenCodeModelId, resolveQwenLocalPlanCached } from "./qwen-auth.js";
+import { inspectTuiConfig } from "./tui-config-diagnostics.js";
 import { DEFAULT_CONFIG, type QuotaToastConfig } from "./types.js";
 
 export type DeferredQuotaRefreshReason =
@@ -58,7 +69,7 @@ export type QuotaToastCollectionResult = {
   shouldReconcileDetectedProviders: boolean;
 };
 
-export type QuotaToastEmissionPlan = {
+type QuotaToastEmissionPlan = {
   config: QuotaToastConfig;
   message: string | null;
   detectedProviderIds: string[];
@@ -70,12 +81,15 @@ export type QuotaToastEmissionPlan = {
   };
 };
 
+type QuotaToastBody = {
+  message: string;
+  variant: "info" | "success" | "warning" | "error";
+  duration?: number;
+  title?: string;
+};
+
 export interface QuotaToastRuntime {
-  prepareTrigger(params: {
-    sessionID: string;
-    trigger: string;
-    deferredRetry?: boolean;
-  }): Promise<QuotaToastEmissionPlan | null>;
+  handleTrigger(params: { sessionID: string; trigger: string }): Promise<void>;
 }
 
 export interface QuotaToastRuntimeDependencies {
@@ -85,9 +99,9 @@ export interface QuotaToastRuntimeDependencies {
   isSubagentSession: (sessionID: string) => Promise<boolean>;
   reconcileDetectedProviders: (providerIds: readonly string[]) => Promise<void>;
   setSessionTokenError: (error: SessionTokenError | undefined) => void;
+  showToast: (body: QuotaToastBody) => Promise<unknown>;
   log: (message: string, extra?: Record<string, unknown>) => Promise<void>;
   onInitialized: (extra: Record<string, unknown>) => void;
-  runDeferredTrigger: (sessionID: string) => Promise<void>;
 }
 
 const DEFERRED_QUOTA_REFRESH_DELAYS_MS = [3_000, 15_000, 60_000, 300_000] as const;
@@ -104,6 +118,10 @@ export function createQuotaToastRuntime(
 
   const deferredQuotaRefreshes = new Map<string, DeferredQuotaRefreshState>();
   const detectedProviderIdsByToastCacheKey = new Map<string, string[]>();
+  const maintainerAnnouncementToastFallback = {
+    pending: true,
+    inFlight: false,
+  };
 
   function getDeferredQuotaRefreshDelayMs(attempts: number): number {
     const index = Math.min(Math.max(0, attempts), DEFERRED_QUOTA_REFRESH_DELAYS_MS.length - 1);
@@ -166,7 +184,11 @@ export function createQuotaToastRuntime(
     const state = deferredQuotaRefreshes.get(sessionID);
     if (!state || state.inFlight) return;
 
-    await dependencies.runDeferredTrigger(sessionID);
+    await handleTriggerInternal({
+      sessionID,
+      trigger: "deferred.retry",
+      deferredRetry: true,
+    });
   }
 
   function isProviderEnabled(providerId: string): boolean {
@@ -473,6 +495,154 @@ export function createQuotaToastRuntime(
     return trigger === "deferred.retry";
   }
 
+  function triggerMaintainerAnnouncementToastFallback(
+    trigger: string,
+    detectedProviderIds: string[],
+    runtimeConfig: QuotaToastConfig,
+  ): void {
+    if (
+      !maintainerAnnouncementToastFallback.pending ||
+      maintainerAnnouncementToastFallback.inFlight
+    ) {
+      return;
+    }
+
+    if (!runtimeConfig.enabled || !runtimeConfig.enableToast) {
+      maintainerAnnouncementToastFallback.pending = false;
+      return;
+    }
+
+    if (
+      !runtimeConfig.maintainerAnnouncements.enabled ||
+      !runtimeConfig.maintainerAnnouncements.home
+    ) {
+      maintainerAnnouncementToastFallback.pending = false;
+      return;
+    }
+
+    maintainerAnnouncementToastFallback.inFlight = true;
+    void (async () => {
+      try {
+        const summary = getMaintainerAnnouncementsSummary({
+          announcements: BUNDLED_MAINTAINER_ANNOUNCEMENTS,
+          enabledProviders: detectedProviderIds,
+        });
+
+        if (summary.activeCount <= 0) {
+          if (summary.futureCount <= 0) {
+            maintainerAnnouncementToastFallback.pending = false;
+          }
+          return;
+        }
+
+        const tuiDiagnostics = await inspectTuiConfig({ roots: dependencies.roots() });
+        if (tuiDiagnostics.quotaPluginConfigured) {
+          maintainerAnnouncementToastFallback.pending = false;
+          return;
+        }
+
+        const message = formatMaintainerAnnouncementHomeCountLine(summary.activeCount);
+        if (!message) return;
+
+        await dependencies.showToast({
+          message: sanitizeDisplayText(message),
+          variant: "info",
+          duration: runtimeConfig.toastDurationMs,
+        });
+        maintainerAnnouncementToastFallback.pending = false;
+        await dependencies.log("Displayed maintainer announcement fallback toast", { trigger });
+      } catch (error) {
+        await dependencies.log("Failed to show maintainer announcement fallback toast", {
+          trigger,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        maintainerAnnouncementToastFallback.inFlight = false;
+      }
+    })();
+  }
+
+  async function emitQuotaToastPlan(params: {
+    sessionID: string;
+    trigger: string;
+    plan: QuotaToastEmissionPlan;
+  }): Promise<void> {
+    const {
+      config: runtimeConfig,
+      message,
+      detectedProviderIds,
+      freshProviderResults,
+    } = params.plan;
+    let resetNotification: string | undefined;
+    if (
+      runtimeConfig.enableToast &&
+      runtimeConfig.resetNotifications.enabled &&
+      freshProviderResults.length > 0
+    ) {
+      try {
+        const notices = await observeQuotaResetNotifications({
+          providers: freshProviderResults,
+          windows: runtimeConfig.resetNotifications.windows,
+        });
+        resetNotification = formatQuotaResetNotification(notices) ?? undefined;
+      } catch (error) {
+        await dependencies.log("Failed to observe quota reset transitions", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (params.plan.deferredRetryResult) {
+      await dependencies.log("Deferred quota refresh did not produce reportable data", {
+        sessionID: params.sessionID,
+        trigger: params.trigger,
+        retryable: params.plan.deferredRetryResult.retryable,
+        retryReason: params.plan.deferredRetryResult.retryReason,
+      });
+      return;
+    }
+
+    if (!message) {
+      await dependencies.log("No quota message to display", { trigger: params.trigger });
+      return;
+    }
+
+    if (!runtimeConfig.enableToast) {
+      await dependencies.log("Toast disabled (enableToast=false)", { trigger: params.trigger });
+      return;
+    }
+
+    try {
+      await dependencies.showToast({
+        message: sanitizeDisplayText(message),
+        variant: "info",
+        duration: runtimeConfig.toastDurationMs,
+      });
+      triggerMaintainerAnnouncementToastFallback(
+        params.trigger,
+        detectedProviderIds,
+        runtimeConfig,
+      );
+      await dependencies.log("Displayed quota toast", { message, trigger: params.trigger });
+      if (resetNotification) {
+        await dependencies.showToast({
+          title: "Quota available",
+          message: sanitizeDisplayText(resetNotification),
+          variant: "success",
+          duration: runtimeConfig.toastDurationMs,
+        });
+        await dependencies.log("Displayed quota reset notification", {
+          message: resetNotification,
+          trigger: params.trigger,
+        });
+      }
+    } catch (error) {
+      await dependencies.log("Failed to show toast", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   async function prepareTrigger(params: {
     sessionID: string;
     trigger: string;
@@ -604,7 +774,26 @@ export function createQuotaToastRuntime(
     }
   }
 
-  return { prepareTrigger };
+  async function handleTriggerInternal(params: {
+    sessionID: string;
+    trigger: string;
+    deferredRetry?: boolean;
+  }): Promise<void> {
+    const plan = await prepareTrigger(params);
+    if (!plan) return;
+
+    try {
+      await emitQuotaToastPlan({ ...params, plan });
+    } finally {
+      plan.complete();
+    }
+  }
+
+  async function handleTrigger(params: { sessionID: string; trigger: string }): Promise<void> {
+    await handleTriggerInternal(params);
+  }
+
+  return { handleTrigger };
 }
 
 export function formatQuotaToastDebugInfo(params: {

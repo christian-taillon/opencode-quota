@@ -732,6 +732,92 @@ describe("maintainer announcement plugin integration", () => {
     expect(resetMocks.observeQuotaResetNotifications).toHaveBeenCalledOnce();
   });
 
+  it("preserves awaited primary and reset edges without awaiting announcement completion", async () => {
+    configureQuestionQuotaToast({
+      resetNotifications: { enabled: true, windows: ["weekly"] },
+    });
+    resetMocks.observeQuotaResetNotifications.mockResolvedValue([
+      { providerId: "copilot", entryName: "Copilot", window: "weekly" },
+    ]);
+    resetMocks.formatQuotaResetNotification.mockReturnValue("Copilot weekly quota reset");
+
+    let resolvePrimaryToast!: () => void;
+    const primaryToast = new Promise<unknown>((resolve) => {
+      resolvePrimaryToast = () => resolve({});
+    });
+    let resolvePrimaryLog!: () => void;
+    const primaryLog = new Promise<unknown>((resolve) => {
+      resolvePrimaryLog = () => resolve({});
+    });
+    let resolveResetToast!: () => void;
+    const resetToast = new Promise<unknown>((resolve) => {
+      resolveResetToast = () => resolve({});
+    });
+    let resolveAnnouncementDiagnostics!: () => void;
+    const announcementDiagnostics = new Promise<unknown>((resolve) => {
+      resolveAnnouncementDiagnostics = () =>
+        resolve(createPluginTuiConfigInspection(TEST_RUNTIME_ROOT));
+    });
+
+    tuiDiagnosticsMocks.inspectTuiConfig.mockReturnValueOnce(announcementDiagnostics);
+
+    const { QuotaToastPlugin } = await import("../src/plugin.js");
+    const client = createClient();
+    client.tui.showToast.mockImplementation(({ body }: any) => {
+      if (body.variant === "success") return resetToast;
+      if (body.message === ANNOUNCEMENT_TOAST_MESSAGE) return Promise.resolve({});
+      return primaryToast;
+    });
+    client.app.log.mockImplementation(({ body }: any) => {
+      if (body.message === "Displayed quota toast") return primaryLog;
+      return Promise.resolve({});
+    });
+    const hooks = await QuotaToastPlugin({ client } as any);
+
+    const trigger = runSuccessfulQuestion(hooks, "session-awaited-order");
+    await vi.waitFor(() => expect(client.tui.showToast).toHaveBeenCalledTimes(1));
+
+    expect(tuiDiagnosticsMocks.inspectTuiConfig).not.toHaveBeenCalled();
+    expect(
+      client.app.log.mock.calls.some((call) => call[0]?.body?.message === "Displayed quota toast"),
+    ).toBe(false);
+
+    resolvePrimaryToast();
+    await vi.waitFor(() => {
+      expect(tuiDiagnosticsMocks.inspectTuiConfig).toHaveBeenCalledOnce();
+      expect(
+        client.app.log.mock.calls.some(
+          (call) => call[0]?.body?.message === "Displayed quota toast",
+        ),
+      ).toBe(true);
+    });
+    expect(client.tui.showToast).toHaveBeenCalledTimes(1);
+
+    resolvePrimaryLog();
+    await vi.waitFor(() => expect(client.tui.showToast).toHaveBeenCalledTimes(2));
+
+    expect(client.tui.showToast).toHaveBeenLastCalledWith({
+      body: expect.objectContaining({ variant: "success" }),
+    });
+    expect(
+      client.app.log.mock.calls.some(
+        (call) => call[0]?.body?.message === "Displayed quota reset notification",
+      ),
+    ).toBe(false);
+
+    resolveResetToast();
+    await trigger;
+
+    expect(
+      client.app.log.mock.calls.some(
+        (call) => call[0]?.body?.message === "Displayed quota reset notification",
+      ),
+    ).toBe(true);
+
+    resolveAnnouncementDiagnostics();
+    await flushMaintainerFallbackWork();
+  });
+
   it("retries fallback after TUI detection fails", async () => {
     configureQuestionQuotaToast();
     tuiDiagnosticsMocks.inspectTuiConfig.mockRejectedValueOnce(new Error("diagnostics failed"));
