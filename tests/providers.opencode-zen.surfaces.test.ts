@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { QuotaToastEntry } from "../src/lib/entries.js";
 import { formatQuotaRows } from "../src/lib/format.js";
-import { formatQuotaCommand } from "../src/lib/quota-command-format.js";
-import type { QuotaRenderData } from "../src/lib/quota-render-data.js";
-import { buildCompactQuotaStatusLine } from "../src/lib/tui-compact-format.js";
-import { buildSidebarQuotaPanelLines } from "../src/lib/tui-sidebar-format.js";
+import { renderAccountingFourSurfaces } from "./helpers/accounting-four-surface.js";
 
 const budgetAccounting = {
   resultType: "budget",
@@ -77,43 +74,15 @@ const autoReload: QuotaToastEntry = {
   value: true,
 };
 
-function renderSurfaces(data: QuotaRenderData, accountingDetail: "summary" | "detailed") {
-  return {
-    command: formatQuotaCommand({
-      ...data,
-      generatedAtMs: 0,
-      accountingDetail,
-      percentDisplayMode: "remaining",
-    }),
-    toast: formatQuotaRows({
-      version: "test",
-      style: "allWindows",
-      layout: { maxWidth: 50, narrowAt: 42, tinyAt: 32 },
-      entries: data.entries,
-      errors: data.errors,
-      accountingDetail,
-      percentDisplayMode: "remaining",
-    }),
-    sidebar: buildSidebarQuotaPanelLines({
-      data,
-      config: {
-        formatStyle: "allWindows",
-        percentDisplayMode: "remaining",
-        accountingDetail,
-      },
-    }).join("\n"),
-    compact: buildCompactQuotaStatusLine({
-      data,
-      accountingDetail,
-      percentDisplayMode: "remaining",
-      maxWidth: 200,
-    }),
-  };
-}
-
 describe("OpenCode Zen structured four-surface formatting", () => {
   it("renders summary budget semantics without supplementary accounting rows", () => {
-    const outputs = renderSurfaces({ entries: [budget], errors: [] }, "summary");
+    const outputs = renderAccountingFourSurfaces({
+      data: { entries: [budget], errors: [] },
+      accountingDetail: "summary",
+      toastMaxWidth: 50,
+      toastNarrowAt: 42,
+      compactMaxWidth: 200,
+    });
 
     for (const output of Object.values(outputs)) {
       expect(output).toContain("OpenCode Zen");
@@ -126,7 +95,13 @@ describe("OpenCode Zen structured four-surface formatting", () => {
   });
 
   it("renders a primary structured balance fallback without financial legacy fields", () => {
-    const outputs = renderSurfaces({ entries: [primaryBalance], errors: [] }, "summary");
+    const outputs = renderAccountingFourSurfaces({
+      data: { entries: [primaryBalance], errors: [] },
+      accountingDetail: "summary",
+      toastMaxWidth: 50,
+      toastNarrowAt: 42,
+      compactMaxWidth: 200,
+    });
 
     for (const output of Object.values(outputs)) {
       expect(output).toContain("OpenCode Zen");
@@ -140,10 +115,13 @@ describe("OpenCode Zen structured four-surface formatting", () => {
   });
 
   it("renders detailed basis and supplementary values within each surface width", () => {
-    const outputs = renderSurfaces(
-      { entries: [budget, balance, autoReload], errors: [] },
-      "detailed",
-    );
+    const outputs = renderAccountingFourSurfaces({
+      data: { entries: [budget, balance, autoReload], errors: [] },
+      accountingDetail: "detailed",
+      toastMaxWidth: 50,
+      toastNarrowAt: 42,
+      compactMaxWidth: 200,
+    });
 
     for (const output of Object.values(outputs)) {
       expect(output).toContain("Monthly budget");

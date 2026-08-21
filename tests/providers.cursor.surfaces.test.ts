@@ -1,11 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { QuotaToastEntry } from "../src/lib/entries.js";
-import { formatQuotaRows } from "../src/lib/format.js";
-import { formatQuotaCommand } from "../src/lib/quota-command-format.js";
-import type { QuotaRenderData } from "../src/lib/quota-render-data.js";
-import { buildCompactQuotaStatusLine } from "../src/lib/tui-compact-format.js";
-import { buildSidebarQuotaPanelLines } from "../src/lib/tui-sidebar-format.js";
+import { renderAccountingFourSurfaces } from "./helpers/accounting-four-surface.js";
 
 const budgetAccounting = {
   resultType: "budget",
@@ -57,40 +53,6 @@ function spendEntry(name: "API" | "Known API" | "Auto+Composer", decimal: string
   };
 }
 
-function renderSurfaces(data: QuotaRenderData, accountingDetail: "summary" | "detailed") {
-  return {
-    command: formatQuotaCommand({
-      ...data,
-      generatedAtMs: 0,
-      accountingDetail,
-      percentDisplayMode: "remaining",
-    }),
-    toast: formatQuotaRows({
-      version: "test",
-      style: "allWindows",
-      layout: { maxWidth: 68, narrowAt: 46, tinyAt: 32 },
-      entries: data.entries,
-      errors: data.errors,
-      accountingDetail,
-      percentDisplayMode: "remaining",
-    }),
-    sidebar: buildSidebarQuotaPanelLines({
-      data,
-      config: {
-        formatStyle: "allWindows",
-        percentDisplayMode: "remaining",
-        accountingDetail,
-      },
-    }).join("\n"),
-    compact: buildCompactQuotaStatusLine({
-      data,
-      accountingDetail,
-      percentDisplayMode: "remaining",
-      maxWidth: 240,
-    }),
-  };
-}
-
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -99,10 +61,13 @@ describe("Cursor structured four-surface formatting", () => {
   it("renders complete API budget basis and supplementary Auto+Composer spend", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2099-01-01T00:00:00.000Z"));
-    const outputs = renderSurfaces(
-      { entries: [apiBudget, spendEntry("Auto+Composer", "1.25")], errors: [] },
-      "detailed",
-    );
+    const outputs = renderAccountingFourSurfaces({
+      data: { entries: [apiBudget, spendEntry("Auto+Composer", "1.25")], errors: [] },
+      accountingDetail: "detailed",
+      toastMaxWidth: 68,
+      toastNarrowAt: 46,
+      compactMaxWidth: 240,
+    });
 
     for (const output of Object.values(outputs)) {
       expect(output).toContain("Cursor");
@@ -112,7 +77,7 @@ describe("Cursor structured four-surface formatting", () => {
       expect(output).toContain("USD");
       expect(output).not.toContain("$");
     }
-    for (const output of Object.values(outputs).slice(0, 3)) {
+    for (const output of [outputs.command, outputs.toast, outputs.sidebar]) {
       expect(output).toContain("Auto+Composer spend");
       expect(output).toContain("USD 1.25");
       expect(output).toMatch(/\b\d+d\b/u);
@@ -125,8 +90,8 @@ describe("Cursor structured four-surface formatting", () => {
   });
 
   it("renders partial coverage only as Known API spend plus the existing error", () => {
-    const outputs = renderSurfaces(
-      {
+    const outputs = renderAccountingFourSurfaces({
+      data: {
         entries: [spendEntry("Known API", "2")],
         errors: [
           {
@@ -135,8 +100,11 @@ describe("Cursor structured four-surface formatting", () => {
           },
         ],
       },
-      "summary",
-    );
+      accountingDetail: "summary",
+      toastMaxWidth: 68,
+      toastNarrowAt: 46,
+      compactMaxWidth: 240,
+    });
 
     for (const output of Object.values(outputs)) {
       expect(output).toContain("Known API spend");
@@ -151,13 +119,16 @@ describe("Cursor structured four-surface formatting", () => {
   });
 
   it("renders no-allowance complete coverage as API cycle spend and hides supplementary spend in summary", () => {
-    const outputs = renderSurfaces(
-      {
+    const outputs = renderAccountingFourSurfaces({
+      data: {
         entries: [spendEntry("API", "0.5")],
         errors: [],
       },
-      "summary",
-    );
+      accountingDetail: "summary",
+      toastMaxWidth: 68,
+      toastNarrowAt: 46,
+      compactMaxWidth: 240,
+    });
 
     for (const output of Object.values(outputs)) {
       expect(output).toContain("API spend");

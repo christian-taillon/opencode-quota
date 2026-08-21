@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { QuotaToastEntry } from "../src/lib/entries.js";
-import { formatQuotaRows } from "../src/lib/format.js";
-import { formatQuotaCommand } from "../src/lib/quota-command-format.js";
-import type { QuotaRenderData } from "../src/lib/quota-render-data.js";
-import { buildCompactQuotaStatusLine } from "../src/lib/tui-compact-format.js";
-import { buildSidebarQuotaPanelLines } from "../src/lib/tui-sidebar-format.js";
+import { renderAccountingFourSurfaces } from "./helpers/accounting-four-surface.js";
 
 const quotaAccounting = {
   resultType: "quota",
@@ -55,53 +51,25 @@ function balanceEntry(
   };
 }
 
-function renderFourSurfaces(data: QuotaRenderData): string[] {
-  return [
-    formatQuotaCommand({
-      ...data,
-      generatedAtMs: 0,
-      accountingDetail: "detailed",
-      percentDisplayMode: "remaining",
-    }),
-    formatQuotaRows({
-      version: "test",
-      style: "allWindows",
-      layout: { maxWidth: 72, narrowAt: 48, tinyAt: 32 },
-      entries: data.entries,
-      errors: data.errors,
-      accountingDetail: "detailed",
-      percentDisplayMode: "remaining",
-    }),
-    buildSidebarQuotaPanelLines({
-      data,
-      config: {
-        formatStyle: "allWindows",
-        percentDisplayMode: "remaining",
-        accountingDetail: "detailed",
-      },
-    }).join("\n"),
-    buildCompactQuotaStatusLine({
-      data,
-      accountingDetail: "detailed",
-      percentDisplayMode: "remaining",
-      maxWidth: 240,
-    }),
-  ];
-}
-
 describe("Xiaomi MiMo structured four-surface formatting", () => {
   it("shows plan identity, monthly token quota, and separate balance components", () => {
-    const outputs = renderFourSurfaces({
-      entries: [
-        monthlyQuota,
-        balanceEntry("total_balance", "primary", "50"),
-        balanceEntry("cash_balance", "supplementary", "30"),
-        balanceEntry("gift_balance", "supplementary", "20"),
-      ],
-      errors: [],
+    const outputs = renderAccountingFourSurfaces({
+      data: {
+        entries: [
+          monthlyQuota,
+          balanceEntry("total_balance", "primary", "50"),
+          balanceEntry("cash_balance", "supplementary", "30"),
+          balanceEntry("gift_balance", "supplementary", "20"),
+        ],
+        errors: [],
+      },
+      accountingDetail: "detailed",
+      toastMaxWidth: 72,
+      toastNarrowAt: 48,
+      compactMaxWidth: 240,
     });
 
-    for (const output of outputs) {
+    for (const output of Object.values(outputs)) {
       expect(output).toContain("Xiaomi MiMo");
       expect(output).toContain("Standard");
       expect(output).toContain("Monthly quota");
@@ -111,23 +79,29 @@ describe("Xiaomi MiMo structured four-surface formatting", () => {
       expect(output).toContain("Cash balance");
       expect(output).not.toContain("$");
     }
-    for (const output of outputs.slice(0, 3)) {
+    for (const output of [outputs.command, outputs.toast, outputs.sidebar]) {
       expect(output).toContain("Gift balance");
     }
-    expect(outputs[0]).toContain(group);
-    expect(outputs[0]).toContain("Used: 25 tokens");
-    expect(outputs[0]).toContain("Limit: 100 tokens");
-    expect(outputs[1]?.split("\n").every((line) => line.length <= 72)).toBe(true);
-    expect(outputs[2]?.split("\n").every((line) => line.length <= 36)).toBe(true);
+    expect(outputs.command).toContain(group);
+    expect(outputs.command).toContain("Used: 25 tokens");
+    expect(outputs.command).toContain("Limit: 100 tokens");
+    expect(outputs.toast.split("\n").every((line) => line.length <= 72)).toBe(true);
+    expect(outputs.sidebar.split("\n").every((line) => line.length <= 36)).toBe(true);
   });
 
   it("renders missing-currency balances as credit counts", () => {
-    const outputs = renderFourSurfaces({
-      entries: [balanceEntry("total_balance", "primary", "12.5", null)],
-      errors: [],
+    const outputs = renderAccountingFourSurfaces({
+      data: {
+        entries: [balanceEntry("total_balance", "primary", "12.5", null)],
+        errors: [],
+      },
+      accountingDetail: "detailed",
+      toastMaxWidth: 72,
+      toastNarrowAt: 48,
+      compactMaxWidth: 240,
     });
 
-    for (const output of outputs) {
+    for (const output of Object.values(outputs)) {
       expect(output).toContain("Total balance");
       expect(output).toContain("12.5 credits");
       expect(output).not.toContain("USD");

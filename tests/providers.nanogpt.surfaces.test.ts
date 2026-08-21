@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { QuotaToastEntry } from "../src/lib/entries.js";
-import { formatQuotaRows } from "../src/lib/format.js";
-import { formatQuotaCommand } from "../src/lib/quota-command-format.js";
-import type { QuotaRenderData } from "../src/lib/quota-render-data.js";
-import { buildCompactQuotaStatusLine } from "../src/lib/tui-compact-format.js";
-import { buildSidebarQuotaPanelLines } from "../src/lib/tui-sidebar-format.js";
+import { renderAccountingFourSurfaces } from "./helpers/accounting-four-surface.js";
 
 const quotaAccounting = {
   resultType: "quota",
@@ -70,46 +66,15 @@ const nanoBalance: QuotaToastEntry = {
   quantity: { decimal: "26.71801147", unit: { kind: "custom", symbol: "NANO" } },
 };
 
-function renderSurfaces(data: QuotaRenderData, accountingDetail: "summary" | "detailed") {
-  return {
-    command: formatQuotaCommand({
-      ...data,
-      generatedAtMs: 0,
-      accountingDetail,
-      percentDisplayMode: "remaining",
-    }),
-    toast: formatQuotaRows({
-      version: "test",
-      style: "allWindows",
-      layout: { maxWidth: 56, narrowAt: 42, tinyAt: 32 },
-      entries: data.entries,
-      errors: data.errors,
-      accountingDetail,
-      percentDisplayMode: "remaining",
-    }),
-    sidebar: buildSidebarQuotaPanelLines({
-      data,
-      config: {
-        formatStyle: "allWindows",
-        percentDisplayMode: "remaining",
-        accountingDetail,
-      },
-    }).join("\n"),
-    compact: buildCompactQuotaStatusLine({
-      data,
-      accountingDetail,
-      percentDisplayMode: "remaining",
-      maxWidth: 220,
-    }),
-  };
-}
-
 describe("NanoGPT structured four-surface formatting", () => {
   it("renders both quota windows, provider-reported basis, resets, and USD balance", () => {
-    const outputs = renderSurfaces(
-      { entries: [daily, monthly, usdBalance], errors: [] },
-      "detailed",
-    );
+    const outputs = renderAccountingFourSurfaces({
+      data: { entries: [daily, monthly, usdBalance], errors: [] },
+      accountingDetail: "detailed",
+      toastMaxWidth: 56,
+      toastNarrowAt: 42,
+      compactMaxWidth: 220,
+    });
 
     for (const output of Object.values(outputs)) {
       expect(output).toContain("NanoGPT");
@@ -127,8 +92,8 @@ describe("NanoGPT structured four-surface formatting", () => {
   });
 
   it("renders the valid NANO fallback while retaining a bounded partial error", () => {
-    const outputs = renderSurfaces(
-      {
+    const outputs = renderAccountingFourSurfaces({
+      data: {
         entries: [nanoBalance],
         errors: [
           {
@@ -137,8 +102,11 @@ describe("NanoGPT structured four-surface formatting", () => {
           },
         ],
       },
-      "summary",
-    );
+      accountingDetail: "summary",
+      toastMaxWidth: 56,
+      toastNarrowAt: 42,
+      compactMaxWidth: 220,
+    });
 
     for (const output of [outputs.command, outputs.toast, outputs.sidebar]) {
       expect(output).toContain("26.71801147 NANO");

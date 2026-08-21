@@ -1,11 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { QuotaToastEntry } from "../src/lib/entries.js";
-import { formatQuotaRows } from "../src/lib/format.js";
-import { formatQuotaCommand } from "../src/lib/quota-command-format.js";
-import type { QuotaRenderData } from "../src/lib/quota-render-data.js";
-import { buildCompactQuotaStatusLine } from "../src/lib/tui-compact-format.js";
-import { buildSidebarQuotaPanelLines } from "../src/lib/tui-sidebar-format.js";
+import { renderAccountingFourSurfaces } from "./helpers/accounting-four-surface.js";
 
 const quotaAccounting = {
   resultType: "quota" as const,
@@ -71,45 +67,17 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function renderFourSurfaces(data: QuotaRenderData): string[] {
-  return [
-    formatQuotaCommand({
-      ...data,
-      generatedAtMs: 0,
-      accountingDetail: "detailed",
-      percentDisplayMode: "remaining",
-    }),
-    formatQuotaRows({
-      version: "test",
-      style: "allWindows",
-      layout: { maxWidth: 64, narrowAt: 44, tinyAt: 32 },
-      entries: data.entries,
-      errors: data.errors,
-      accountingDetail: "detailed",
-      percentDisplayMode: "remaining",
-    }),
-    buildSidebarQuotaPanelLines({
-      data,
-      config: {
-        formatStyle: "allWindows",
-        percentDisplayMode: "remaining",
-        accountingDetail: "detailed",
-      },
-    }).join("\n"),
-    buildCompactQuotaStatusLine({
-      data,
-      accountingDetail: "detailed",
-      percentDisplayMode: "remaining",
-      maxWidth: 220,
-    }),
-  ];
-}
-
 describe("Kilo Gateway structured four-surface formatting", () => {
   it("shows one credits percentage with USD remaining basis and no duplicate row", () => {
-    const outputs = renderFourSurfaces({ entries: [positivePass], errors: [] });
+    const outputs = renderAccountingFourSurfaces({
+      data: { entries: [positivePass], errors: [] },
+      accountingDetail: "detailed",
+      toastMaxWidth: 64,
+      toastNarrowAt: 44,
+      compactMaxWidth: 220,
+    });
 
-    for (const output of outputs) {
+    for (const output of Object.values(outputs)) {
       expect(output).toContain("Kilo Gateway");
       expect(output).toContain("Credits");
       expect(output).toContain("83%");
@@ -117,42 +85,54 @@ describe("Kilo Gateway structured four-surface formatting", () => {
       expect(output).not.toContain("$");
       expect(output.match(/Credits/gu)).toHaveLength(1);
     }
-    expect(outputs[0]).toContain("USD 12.50");
-    expect(outputs[0]).toContain("Used: USD 2.50");
-    expect(outputs[0]).toContain("Limit: USD 15.00");
-    expect(outputs[0]).toContain("Remaining: USD 12.50");
-    expect(outputs[1]?.split("\n").every((line) => line.length <= 64)).toBe(true);
-    expect(outputs[2]?.split("\n").every((line) => line.length <= 36)).toBe(true);
+    expect(outputs.command).toContain("USD 12.50");
+    expect(outputs.command).toContain("Used: USD 2.50");
+    expect(outputs.command).toContain("Limit: USD 15.00");
+    expect(outputs.command).toContain("Remaining: USD 12.50");
+    expect(outputs.toast.split("\n").every((line) => line.length <= 64)).toBe(true);
+    expect(outputs.sidebar.split("\n").every((line) => line.length <= 36)).toBe(true);
   });
 
   it("shows one zero-credit quantity with its reset and no percentage", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2099-01-01T00:00:00.000Z"));
 
-    const outputs = renderFourSurfaces({
-      entries: [quantityEntry(quotaAccounting, "remaining_credits", "0", resetTimeIso)],
-      errors: [],
+    const outputs = renderAccountingFourSurfaces({
+      data: {
+        entries: [quantityEntry(quotaAccounting, "remaining_credits", "0", resetTimeIso)],
+        errors: [],
+      },
+      accountingDetail: "detailed",
+      toastMaxWidth: 64,
+      toastNarrowAt: 44,
+      compactMaxWidth: 220,
     });
 
-    for (const output of outputs) {
+    for (const output of Object.values(outputs)) {
       expect(output).toContain("Kilo Gateway");
       expect(output).toContain("Remaining credits");
       expect(output).toContain("USD 0.00");
       expect(output).not.toContain("%");
       expect(output).not.toContain("$");
     }
-    for (const output of outputs.slice(0, 3)) {
+    for (const output of [outputs.command, outputs.toast, outputs.sidebar]) {
       expect(output).toMatch(/\b\d+d\b/u);
     }
   });
 
   it("keeps the Gateway fallback as one total-balance quantity", () => {
-    const outputs = renderFourSurfaces({
-      entries: [quantityEntry(balanceAccounting, "total_balance", "8.25")],
-      errors: [],
+    const outputs = renderAccountingFourSurfaces({
+      data: {
+        entries: [quantityEntry(balanceAccounting, "total_balance", "8.25")],
+        errors: [],
+      },
+      accountingDetail: "detailed",
+      toastMaxWidth: 64,
+      toastNarrowAt: 44,
+      compactMaxWidth: 220,
     });
 
-    for (const output of outputs) {
+    for (const output of Object.values(outputs)) {
       expect(output).toContain("Kilo Gateway");
       expect(output).toContain("Total balance");
       expect(output).toContain("USD 8.25");
