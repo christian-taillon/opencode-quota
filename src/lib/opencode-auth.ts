@@ -24,7 +24,10 @@ type CredentialDatabase = {
   prepare(sql: string): { all(...params: string[]): unknown[] };
 };
 
-type CredentialDatabaseConstructor = new (path: string, options?: Record<string, unknown>) => CredentialDatabase;
+type CredentialDatabaseConstructor = new (
+  path: string,
+  options?: Record<string, unknown>,
+) => CredentialDatabase;
 
 type AuthCacheEntry = {
   timestamp: number;
@@ -35,30 +38,47 @@ type AuthCacheEntry = {
 let authCache: AuthCacheEntry | null = null;
 
 /**
- * Get candidate auth.json paths in priority order.
- * Some OpenCode installations use Linux-style paths even on macOS,
- * so we check multiple locations.
+ * Get candidate legacy auth.json paths for Cursor OAuth compatibility.
+ * Some OpenCode installations use Linux-style paths even on macOS, so we
+ * check multiple locations.
  */
 export function getAuthPaths(): string[] {
-  // OpenCode stores auth at `${Global.Path.data}/auth.json`.
-  // We generate candidates based on OpenCode runtime dir semantics (xdg-basedir)
-  // plus platform fallbacks for alternate/legacy installs.
+  // Generate legacy candidates from OpenCode runtime dir semantics (xdg-basedir)
+  // plus platform fallbacks for alternate installs.
   const { dataDirs } = getOpencodeRuntimeDirCandidates();
   return dataDirs.map((d) => join(d, "auth.json"));
 }
 
-/** Returns OpenCode's primary auth.json path (for display/logging) */
+/** Returns the primary legacy auth.json path used for Cursor OAuth compatibility. */
 export function getAuthPath(): string {
   return join(getOpencodeRuntimeDirs().dataDir, "auth.json");
 }
 
-export async function readAuthFile(): Promise<AuthData | null> {
+/**
+ * Get candidate OpenCode credential database paths in priority order.
+ *
+ * `OPENCODE_DB` overrides the normal runtime data-directory candidates.
+ */
+export function getCredentialDatabasePaths(): string[] {
   const { dataDirs } = getOpencodeRuntimeDirCandidates();
-  return readCredentialDatabases(dataDirs);
+  return getCredentialDatabasePathsForDataDirs(dataDirs);
 }
 
-function readCredentialDatabases(dataDirs: string[]): AuthData | null {
-  for (const path of getCredentialDbPaths(dataDirs)) {
+/** Returns OpenCode's primary credential database path for display/logging. */
+export function getCredentialDatabasePath(): string {
+  const paths = getCredentialDatabasePaths();
+  if (paths[0]) return paths[0];
+  return process.env.OPENCODE_DB?.trim() === ":memory:"
+    ? ":memory:"
+    : join(getOpencodeRuntimeDirs().dataDir, "opencode.db");
+}
+
+export async function readAuthFile(): Promise<AuthData | null> {
+  return readCredentialDatabases(getCredentialDatabasePaths());
+}
+
+function readCredentialDatabases(paths: string[]): AuthData | null {
+  for (const path of paths) {
     const auth = readCredentialDatabase(path);
     if (auth) return auth;
   }
@@ -66,11 +86,15 @@ function readCredentialDatabases(dataDirs: string[]): AuthData | null {
   return null;
 }
 
-function getCredentialDbPaths(dataDirs: string[]): string[] {
+function getCredentialDatabasePathsForDataDirs(dataDirs: string[]): string[] {
   const override = process.env.OPENCODE_DB?.trim();
   if (override) {
     if (override === ":memory:") return [];
-    return [isAbsolute(override) ? override : resolve(dataDirs[0] ?? getOpencodeRuntimeDirs().dataDir, override)];
+    return [
+      isAbsolute(override)
+        ? override
+        : resolve(dataDirs[0] ?? getOpencodeRuntimeDirs().dataDir, override),
+    ];
   }
   return dataDirs.map((dataDir) => join(dataDir, "opencode.db"));
 }
@@ -82,12 +106,19 @@ function readCredentialDatabase(path: string): AuthData | null {
   try {
     database = openCredentialDatabase(path);
     const rows = database
-      .prepare("SELECT integration_id, value FROM credential WHERE integration_id IS NOT NULL ORDER BY time_updated DESC, id DESC")
+      .prepare(
+        "SELECT integration_id, value FROM credential WHERE integration_id IS NOT NULL ORDER BY time_updated DESC, id DESC",
+      )
       .all() as Array<{ integration_id?: unknown; value?: unknown }>;
     const auth: Record<string, unknown> = {};
 
     for (const row of rows) {
-      if (typeof row.integration_id !== "string" || typeof row.value !== "string" || row.integration_id in auth) continue;
+      if (
+        typeof row.integration_id !== "string" ||
+        typeof row.value !== "string" ||
+        row.integration_id in auth
+      )
+        continue;
       const value = parseCredentialValue(row.value);
       if (value) auth[row.integration_id] = value;
     }
@@ -102,11 +133,15 @@ function readCredentialDatabase(path: string): AuthData | null {
 
 function openCredentialDatabase(path: string): CredentialDatabase {
   if ("Bun" in globalThis) {
-    const { Database } = runtimeRequire("bun:sqlite") as { Database: CredentialDatabaseConstructor };
+    const { Database } = runtimeRequire("bun:sqlite") as {
+      Database: CredentialDatabaseConstructor;
+    };
     return new Database(path, { readonly: true });
   }
 
-  const { DatabaseSync } = runtimeRequire("node:sqlite") as { DatabaseSync: CredentialDatabaseConstructor };
+  const { DatabaseSync } = runtimeRequire("node:sqlite") as {
+    DatabaseSync: CredentialDatabaseConstructor;
+  };
   return new DatabaseSync(path, { readOnly: true, timeout: 5_000 });
 }
 

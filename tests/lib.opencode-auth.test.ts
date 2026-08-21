@@ -1,17 +1,26 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { clearReadAuthFileCacheForTests, readAuthFile } from "../src/lib/opencode-auth.js";
+import {
+  clearReadAuthFileCacheForTests,
+  getCredentialDatabasePath,
+  getCredentialDatabasePaths,
+  readAuthFile,
+} from "../src/lib/opencode-auth.js";
 
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
   clearReadAuthFileCacheForTests();
   vi.unstubAllEnvs();
-  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+  await Promise.all(
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
+  );
 });
 
 async function createCredentialDatabase(): Promise<{ dataDir: string; databasePath: string }> {
@@ -37,7 +46,13 @@ async function createCredentialDatabase(): Promise<{ dataDir: string; databasePa
     .run(
       "copilot",
       "github-copilot",
-      JSON.stringify({ type: "oauth", access: "copilot-access", refresh: "copilot-refresh", expires: 10, metadata: { enterpriseUrl: "example.ghe.com" } }),
+      JSON.stringify({
+        type: "oauth",
+        access: "copilot-access",
+        refresh: "copilot-refresh",
+        expires: 10,
+        metadata: { enterpriseUrl: "example.ghe.com" },
+      }),
       1,
     );
   database
@@ -45,7 +60,12 @@ async function createCredentialDatabase(): Promise<{ dataDir: string; databasePa
     .run(
       "openai",
       "openai",
-      JSON.stringify({ type: "oauth", access: "openai-access", refresh: "openai-refresh", expires: 20 }),
+      JSON.stringify({
+        type: "oauth",
+        access: "openai-access",
+        refresh: "openai-refresh",
+        expires: 20,
+      }),
       2,
     );
   database
@@ -56,6 +76,17 @@ async function createCredentialDatabase(): Promise<{ dataDir: string; databasePa
 }
 
 describe("OpenCode auth reader", () => {
+  it("reports the credential database path and honors OPENCODE_DB", async () => {
+    const { dataDir } = await createCredentialDatabase();
+    vi.stubEnv("XDG_DATA_HOME", join(dataDir, ".."));
+
+    expect(getCredentialDatabasePaths()).toContain(join(dataDir, "opencode.db"));
+    expect(getCredentialDatabasePath()).toBe(join(dataDir, "opencode.db"));
+
+    vi.stubEnv("OPENCODE_DB", "custom.db");
+    expect(getCredentialDatabasePaths()).toEqual([join(dataDir, "custom.db")]);
+  });
+
   it("falls back to OAuth credentials stored in OpenCode's database", async () => {
     const { dataDir } = await createCredentialDatabase();
     vi.stubEnv("XDG_DATA_HOME", join(dataDir, ".."));
