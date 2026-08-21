@@ -14,6 +14,7 @@ import {
   DEFAULT_OPENAI_AUTH_CACHE_MAX_AGE_MS,
   hasOpenAIOAuthCached,
   queryOpenAIQuota,
+  queryOpenAIQuotaForCredential,
   resolveOpenAIOAuth,
 } from "../src/lib/openai.js";
 
@@ -70,6 +71,19 @@ describe("openai auth resolution", () => {
 
     const out = await queryOpenAIQuota();
     expect(out && !out.success ? out.error : "").toContain("Token expired");
+  });
+
+  it("redacts a cached access token from API errors", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("token-secret was rejected", { status: 401 })) as any,
+    );
+
+    const out = await queryOpenAIQuotaForCredential({ accessToken: "token-secret" });
+    expect(out).toEqual({
+      success: false,
+      error: "OpenAI API error 401: [redacted] was rejected",
+    });
   });
 
   it("reads auth from chatgpt when codex and openai are absent", async () => {
