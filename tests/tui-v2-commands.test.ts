@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import plugin from "../src/tui-v2.js";
+import plugin from "../src/tui-v2.tsx";
 
 describe("V2 quota TUI commands", () => {
   it("registers every quota command as a local slash command", () => {
@@ -38,5 +38,12 @@ describe("V2 quota TUI commands", () => {
     expect(layer?.commands.every((command) => command.palette)).toBe(true);
     expect(context.ui.slot).toHaveBeenCalledWith(expect.objectContaining({ append: "app" }));
     expect(context.ui.slot).toHaveBeenCalledWith(expect.objectContaining({ append: "sidebar.content" }));
+    expect(context.data.on.mock.calls.map(([event]) => event)).toEqual([
+      "session.step.ended",
+      "session.compaction.ended",
+      "session.tool.input.started",
+      "session.tool.success",
+      "session.tool.failed",
+    ]);
   });
 });

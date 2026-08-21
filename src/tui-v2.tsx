@@ -273,6 +273,7 @@ const plugin = {
   setup(context: TuiContext) {
     let disposeEvents: (() => void) | undefined;
     let activeSessionID: string | undefined;
+    const questionToolCalls = new Set<string>();
     const disposeApp = context.ui.slot({
       append: "app",
       render: () => {
@@ -295,16 +296,30 @@ const plugin = {
             .catch(reportFailure);
         };
         const onStepEnded = context.data.on("session.step.ended", (event) => trigger(event, "idle"));
-        const onCompacted = context.data.on("session.compacted", (event) =>
+        const onCompacted = context.data.on("session.compaction.ended", (event) =>
           trigger(event, "compacted"),
         );
-        const onQuestion = context.data.on("session.tool.success", (event) => {
-          if (event.data?.tool === "question") trigger(event, "question");
+        const onQuestionStarted = context.data.on("session.tool.input.started", (event) => {
+          const id = event.data?.id;
+          if (event.data?.name === "question" && typeof id === "string") {
+            questionToolCalls.add(id);
+          }
+        });
+        const onQuestionSucceeded = context.data.on("session.tool.success", (event) => {
+          const id = event.data?.id;
+          if (typeof id === "string" && questionToolCalls.delete(id)) trigger(event, "question");
+        });
+        const onQuestionFailed = context.data.on("session.tool.failed", (event) => {
+          const id = event.data?.id;
+          if (typeof id === "string") questionToolCalls.delete(id);
         });
         disposeEvents = () => {
           onStepEnded();
           onCompacted();
-          onQuestion();
+          onQuestionStarted();
+          onQuestionSucceeded();
+          onQuestionFailed();
+          questionToolCalls.clear();
         };
         return null;
       },
