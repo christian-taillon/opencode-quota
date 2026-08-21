@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { QUOTA_PROVIDER_RUNTIME_IDS } from "../src/lib/provider-metadata.js";
+import { QUOTA_PROVIDER_REGISTRATION_SOURCE } from "../src/lib/provider-registration.js";
 import { getProviders } from "../src/providers/registry.js";
 
 const EXPECTED_PROVIDER_ORDER = [
@@ -38,6 +39,7 @@ describe("provider registry", () => {
     const second = getProviders();
     const ids = first.map((provider) => provider.id);
 
+    expect(QUOTA_PROVIDER_REGISTRATION_SOURCE.map(({ id }) => id)).toEqual(EXPECTED_PROVIDER_ORDER);
     expect(ids).toEqual(EXPECTED_PROVIDER_ORDER);
     expect(second.map((provider) => provider.id)).toEqual(EXPECTED_PROVIDER_ORDER);
     expect(new Set(ids).size).toBe(ids.length);

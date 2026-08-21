@@ -29,8 +29,8 @@ Do not use it for OAuth-only providers such as OpenAI.
 
 Also update:
 
-- `src/lib/provider-metadata.ts`
-- `src/providers/registry.ts`
+- `src/lib/provider-registration.ts` with the provider metadata and display order
+- `src/providers/registry.ts` with the provider singleton binding
 - `README.md`
 - `/quota_status` diagnostics when the provider exposes auth-source details
 

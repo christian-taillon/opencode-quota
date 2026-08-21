@@ -11,6 +11,7 @@ import {
   QUOTA_PROVIDER_RUNTIME_IDS,
   QUOTA_PROVIDER_SHAPES,
 } from "../src/lib/provider-metadata.js";
+import { QUOTA_PROVIDER_REGISTRATION_SOURCE } from "../src/lib/provider-registration.js";
 
 describe("provider-metadata", () => {
   it("defines the canonical provider setup catalog", () => {
@@ -210,10 +211,10 @@ describe("provider-metadata", () => {
     ]);
   });
 
-  it("derives public metadata views from one canonical catalog", () => {
-    expect(Object.keys(QUOTA_PROVIDER_CATALOG)).toEqual(
-      QUOTA_PROVIDER_SHAPES.map((shape) => shape.id),
-    );
+  it("derives public metadata views from the ordered registration source", () => {
+    const registrationIds = QUOTA_PROVIDER_REGISTRATION_SOURCE.map(({ id }) => id);
+    expect(Object.keys(QUOTA_PROVIDER_CATALOG)).toEqual(registrationIds);
+    expect(QUOTA_PROVIDER_SHAPES.map((shape) => shape.id)).toEqual(registrationIds);
     for (const [id, entry] of Object.entries(QUOTA_PROVIDER_CATALOG)) {
       expect(entry.shape.id).toBe(id);
       expect(QUOTA_PROVIDER_LABELS[id]).toBe(entry.label);
