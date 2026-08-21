@@ -21,7 +21,6 @@ import { createLoadConfigMeta, type LoadConfigMeta } from "./lib/config.js";
 import { findGitWorktreeRoot, getEffectiveConfigRoot } from "./lib/config-file-utils.js";
 import { isCursorModelId, isCursorProviderId } from "./lib/cursor-pricing.js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
-import { formatQuotaRows } from "./lib/format.js";
 import {
   BUNDLED_MAINTAINER_ANNOUNCEMENTS,
   formatMaintainerAnnouncementHomeCountLine,
@@ -44,18 +43,23 @@ import {
   customQuotaProviderDefinitions,
   QUOTA_PROVIDERS_AGGREGATE_ID,
 } from "./lib/quota-providers.js";
-import { collectQuotaRenderData, type SessionModelMeta } from "./lib/quota-render-data.js";
+import type { SessionModelMeta } from "./lib/quota-render-data.js";
 import {
   formatQuotaResetNotification,
   observeQuotaResetNotifications,
 } from "./lib/quota-reset-notifications.js";
 import {
-  createQuotaRuntimeRequestContext,
   type QuotaRuntimeContext,
   resolveQuotaRuntimeContext,
 } from "./lib/quota-runtime-context.js";
 import type { SessionTokenError } from "./lib/quota-status.js";
 import { disposeQuotaTelemetryOwner } from "./lib/quota-telemetry.js";
+import {
+  collectQuotaToastMessage,
+  type DeferredQuotaRefreshReason,
+  formatQuotaToastDebugInfo,
+  type QuotaToastCollectionResult,
+} from "./lib/quota-toast-runtime.js";
 import { isQwenCodeModelId, resolveQwenLocalPlanCached } from "./lib/qwen-auth.js";
 import { inspectTuiConfig } from "./lib/tui-config-diagnostics.js";
 import type { QuotaToastConfig } from "./lib/types.js";
@@ -175,12 +179,6 @@ interface CommandExecuteInput {
 // Deferred Quota Refresh Specification
 // =============================================================================
 
-type DeferredQuotaRefreshReason =
-  | "config_load_failed"
-  | "no_available_providers"
-  | "provider_fetch_failed"
-  | "no_reportable_data";
-
 type DeferredQuotaRefreshState = {
   sessionID: string;
   attempts: number;
@@ -190,13 +188,7 @@ type DeferredQuotaRefreshState = {
   inFlight: boolean;
 };
 
-type QuotaMessageFetchResult = {
-  message: string | null;
-  cacheRenderedMessage: boolean;
-  retryable: boolean;
-  retryReason?: DeferredQuotaRefreshReason;
-  hasQuotaRows: boolean;
-  detectedProviderIds: string[];
+type QuotaMessageFetchResult = QuotaToastCollectionResult & {
   resetNotification?: string;
 };
 
@@ -703,37 +695,6 @@ export const QuotaToastPlugin: Plugin = async ({ client, directory }) => {
     }
   }
 
-  function formatDebugInfo(params: {
-    trigger: string;
-    reason: string;
-    currentModel?: string;
-    enabledProviders: string[] | "auto";
-    availability?: Array<{ id: string; ok: boolean }>;
-  }): string {
-    const availability = params.availability
-      ? params.availability.map((x) => `${x.id}=${x.ok ? "ok" : "no"}`).join(" ")
-      : "unknown";
-
-    const providers =
-      params.enabledProviders === "auto"
-        ? "(auto)"
-        : params.enabledProviders.length > 0
-          ? params.enabledProviders.join(",")
-          : "(none)";
-
-    const modelPart = params.currentModel ? ` model=${params.currentModel}` : "";
-
-    const paths = configMeta.paths.length > 0 ? configMeta.paths.join(" | ") : "(none)";
-
-    return [
-      `Quota Toast Debug (opencode-quota)`,
-      `trigger=${params.trigger} reason=${params.reason}`,
-      `configSource=${configMeta.source} paths=${paths}`,
-      `enabled=${config.enabled} providers=${providers}${modelPart}`,
-      `available=${availability}`,
-    ].join("\n");
-  }
-
   function buildToastCacheKey(params: {
     sessionID: string;
     sessionMeta?: SessionModelMeta;
@@ -765,12 +726,6 @@ export const QuotaToastPlugin: Plugin = async ({ client, directory }) => {
     ].join("|");
   }
 
-  function isProviderFetchFailureOnly(errors: Array<{ message: string }>): boolean {
-    return (
-      errors.length > 0 && errors.every((error) => error.message === "Failed to read quota data")
-    );
-  }
-
   async function fetchQuotaMessageResult(params: {
     trigger: string;
     sessionID?: string;
@@ -786,10 +741,11 @@ export const QuotaToastPlugin: Plugin = async ({ client, directory }) => {
     if (!configLoaded) {
       return {
         message: config.debug
-          ? formatDebugInfo({
+          ? formatQuotaToastDebugInfo({
               trigger: params.trigger,
               reason: "config load failed",
-              enabledProviders: config.enabledProviders,
+              config,
+              configMeta,
             })
           : null,
         cacheRenderedMessage: false,
@@ -797,34 +753,46 @@ export const QuotaToastPlugin: Plugin = async ({ client, directory }) => {
         retryReason: "config_load_failed",
         hasQuotaRows: false,
         detectedProviderIds: [],
+        freshProviderResults: [],
+        shouldReconcileDetectedProviders: false,
       };
     }
 
     if (!config.enabled) {
       return {
         message: config.debug
-          ? formatDebugInfo({ trigger: params.trigger, reason: "disabled", enabledProviders: [] })
-          : null,
-        cacheRenderedMessage: false,
-        retryable: false,
-        hasQuotaRows: false,
-        detectedProviderIds: [],
-      };
-    }
-
-    if (config.enabledProviders !== "auto" && config.enabledProviders.length === 0) {
-      return {
-        message: config.debug
-          ? formatDebugInfo({
+          ? formatQuotaToastDebugInfo({
               trigger: params.trigger,
-              reason: "enabledProviders empty",
-              enabledProviders: [],
+              reason: "disabled",
+              config,
+              configMeta,
             })
           : null,
         cacheRenderedMessage: false,
         retryable: false,
         hasQuotaRows: false,
         detectedProviderIds: [],
+        freshProviderResults: [],
+        shouldReconcileDetectedProviders: false,
+      };
+    }
+
+    if (config.enabledProviders !== "auto" && config.enabledProviders.length === 0) {
+      return {
+        message: config.debug
+          ? formatQuotaToastDebugInfo({
+              trigger: params.trigger,
+              reason: "enabledProviders empty",
+              config,
+              configMeta,
+            })
+          : null,
+        cacheRenderedMessage: false,
+        retryable: false,
+        hasQuotaRows: false,
+        detectedProviderIds: [],
+        freshProviderResults: [],
+        shouldReconcileDetectedProviders: false,
       };
     }
 
@@ -833,38 +801,21 @@ export const QuotaToastPlugin: Plugin = async ({ client, directory }) => {
       sessionMeta: params.sessionMeta,
       includeSessionMeta: (config) => config.onlyCurrentModel,
     });
-    const runtimeConfig = runtime.config;
-    const quotaRequestContext = createQuotaRuntimeRequestContext(runtime);
-    const quotaResult = await collectQuotaRenderData({
-      client: runtime.client,
-      resolveRuntimeProviderIds: runtime.resolveRuntimeProviderIds,
-      config: runtimeConfig,
-      configMeta: runtime.configMeta,
-      request: quotaRequestContext,
-      surfaceExplicitProviderIssues: true,
-      formatStyle: resolveQuotaFormatStyle(runtimeConfig.formatStyle),
+    const collection = await collectQuotaToastMessage({
+      trigger: params.trigger,
+      runtime,
       bypassProviderCache: params.bypassProviderCache,
-      providers: runtime.providers,
     });
-    const {
-      selection,
-      availability,
-      active,
-      providerResults,
-      attemptedAny,
-      hasExplicitProviderIssues,
-      data,
-    } = quotaResult;
     let resetNotification: string | undefined;
     if (
-      runtimeConfig.enableToast &&
-      runtimeConfig.resetNotifications.enabled &&
-      providerResults.length > 0
+      runtime.config.enableToast &&
+      runtime.config.resetNotifications.enabled &&
+      collection.freshProviderResults.length > 0
     ) {
       try {
         const notices = await observeQuotaResetNotifications({
-          providers: providerResults,
-          windows: runtimeConfig.resetNotifications.windows,
+          providers: collection.freshProviderResults,
+          windows: runtime.config.resetNotifications.windows,
         });
         resetNotification = formatQuotaResetNotification(notices) ?? undefined;
       } catch (error) {
@@ -873,159 +824,14 @@ export const QuotaToastPlugin: Plugin = async ({ client, directory }) => {
         });
       }
     }
-    if (selection?.isAutoMode) {
-      await reconcileDetectedProviderConfig(active.map((provider) => provider.id));
+    if (collection.shouldReconcileDetectedProviders) {
+      await reconcileDetectedProviderConfig(collection.detectedProviderIds);
     }
-    const detectedProviderIds = active.map((provider) => provider.id);
-
-    if (runtimeConfig.showSessionTokens && params.sessionID) {
-      lastSessionTokenError = quotaResult.sessionTokenError;
+    if (runtime.config.showSessionTokens && params.sessionID) {
+      lastSessionTokenError = collection.sessionTokenError;
     }
 
-    const currentModel = selection?.currentModel;
-    const errors = data?.errors ?? [];
-    const hasProviderQuotaRows = Boolean(data?.entries.length);
-    const hasQuotaRows = Boolean(hasProviderQuotaRows || data?.sessionTokens);
-    const providerFetchFailureOnly = attemptedAny && isProviderFetchFailureOnly(errors);
-    const retryableAvailabilityFailure =
-      active.length === 0 && availability.some((item) => !item.ok && item.error === true);
-
-    if (active.length === 0 && !(hasExplicitProviderIssues && errors.length > 0)) {
-      const message = runtimeConfig.debug
-        ? formatDebugInfo({
-            trigger: params.trigger,
-            reason: "no enabled providers available",
-            currentModel,
-            enabledProviders: runtimeConfig.enabledProviders,
-            availability: availability.map((item) => ({
-              id: item.provider.id,
-              ok: item.ok,
-            })),
-          })
-        : null;
-      const retryableNoProviders = selection?.isAutoMode === true || retryableAvailabilityFailure;
-      return {
-        message,
-        cacheRenderedMessage: false,
-        retryable: retryableNoProviders,
-        retryReason: retryableNoProviders ? "no_available_providers" : undefined,
-        hasQuotaRows: false,
-        detectedProviderIds,
-        resetNotification,
-      };
-    }
-
-    if (hasQuotaRows) {
-      const formatted = formatQuotaRows({
-        version: "1.0.0",
-        layout: runtimeConfig.layout,
-        entries: data?.entries ?? [],
-        errors: data?.errors ?? [],
-        style: resolveQuotaFormatStyle(runtimeConfig.formatStyle),
-        percentDisplayMode: runtimeConfig.percentDisplayMode,
-        accountingDetail: runtimeConfig.accountingDetail,
-        resetTimeDecimals: runtimeConfig.resetTimeDecimals,
-        sessionTokens: data?.sessionTokens,
-      });
-
-      const retryableMaskedProviderFailure = !hasProviderQuotaRows && providerFetchFailureOnly;
-
-      if (!runtimeConfig.debug) {
-        return {
-          message: formatted,
-          cacheRenderedMessage: true,
-          retryable: retryableMaskedProviderFailure,
-          retryReason: retryableMaskedProviderFailure ? "provider_fetch_failed" : undefined,
-          hasQuotaRows: true,
-          detectedProviderIds,
-          resetNotification,
-        };
-      }
-
-      const debugFooter = `\n\n[debug] src=${configMeta.source} providers=${runtimeConfig.enabledProviders === "auto" ? "(auto)" : runtimeConfig.enabledProviders.join(",") || "(none)"} avail=${availability
-        .map((item) => `${item.provider.id}:${item.ok ? "ok" : "no"}`)
-        .join(" ")}`;
-
-      return {
-        message: formatted + debugFooter,
-        cacheRenderedMessage: false,
-        retryable: retryableMaskedProviderFailure,
-        retryReason: retryableMaskedProviderFailure ? "provider_fetch_failed" : undefined,
-        hasQuotaRows: true,
-        detectedProviderIds,
-        resetNotification,
-      };
-    }
-
-    // Show errors even without entries when:
-    // 1. showOnBothFail is enabled and at least one provider attempted (existing behavior)
-    // 2. OR we're in explicit mode and have "Not configured"/"Unavailable" errors (new behavior)
-    if (
-      (runtimeConfig.showOnBothFail && attemptedAny && errors.length > 0) ||
-      hasExplicitProviderIssues
-    ) {
-      const errorLines = errors.map((error) => `${error.label}: ${error.message}`).join("\n");
-      const retryableFetchFailure = !hasExplicitProviderIssues && providerFetchFailureOnly;
-      const retryableFailure = retryableFetchFailure || retryableAvailabilityFailure;
-      const retryReason: DeferredQuotaRefreshReason | undefined = retryableFetchFailure
-        ? "provider_fetch_failed"
-        : retryableAvailabilityFailure
-          ? "no_available_providers"
-          : undefined;
-      const message = !runtimeConfig.debug
-        ? errorLines || "Quota unavailable"
-        : (errorLines || "Quota unavailable") +
-          "\n\n" +
-          formatDebugInfo({
-            trigger: params.trigger,
-            reason: hasExplicitProviderIssues
-              ? "providers missing/unavailable"
-              : "all providers failed",
-            currentModel,
-            enabledProviders: runtimeConfig.enabledProviders,
-            availability: availability.map((item) => ({
-              id: item.provider.id,
-              ok: item.ok,
-            })),
-          });
-      return {
-        message,
-        cacheRenderedMessage: false,
-        retryable: retryableFailure,
-        retryReason,
-        hasQuotaRows: false,
-        detectedProviderIds,
-        resetNotification,
-      };
-    }
-
-    const retryableNoData =
-      providerFetchFailureOnly ||
-      (selection?.isAutoMode === true && active.length > 0 && errors.length === 0);
-    return {
-      message: runtimeConfig.debug
-        ? formatDebugInfo({
-            trigger: params.trigger,
-            reason: "no entries",
-            currentModel,
-            enabledProviders: runtimeConfig.enabledProviders,
-            availability: availability.map((item) => ({
-              id: item.provider.id,
-              ok: item.ok,
-            })),
-          })
-        : null,
-      cacheRenderedMessage: false,
-      retryable: retryableNoData,
-      retryReason: providerFetchFailureOnly
-        ? "provider_fetch_failed"
-        : retryableNoData
-          ? "no_reportable_data"
-          : undefined,
-      hasQuotaRows: false,
-      detectedProviderIds,
-      resetNotification,
-    };
+    return { ...collection, resetNotification };
   }
 
   async function reconcileDeferredQuotaRefresh(params: {
