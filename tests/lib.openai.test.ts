@@ -86,6 +86,32 @@ describe("openai auth resolution", () => {
     });
   });
 
+  it("removes role annotations from organization plan labels", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              plan_type: "christiant.io (role:owner)",
+              rate_limit: {
+                limit_reached: false,
+                primary_window: {
+                  used_percent: 17,
+                  limit_window_seconds: 604800,
+                  reset_after_seconds: 3600,
+                },
+              },
+            }),
+            { status: 200 },
+          ),
+      ) as any,
+    );
+
+    const out = await queryOpenAIQuotaForCredential({ accessToken: "token-secret" });
+    expect(out).toMatchObject({ success: true, label: "OpenAI (christiant.io)" });
+  });
+
   it("reads auth from chatgpt when codex and openai are absent", async () => {
     mocks.readAuthFileCached.mockResolvedValueOnce({
       chatgpt: { type: "oauth", access: "a.b.c", expires: Date.now() + 60_000 },
