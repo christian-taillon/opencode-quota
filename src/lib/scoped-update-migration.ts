@@ -1,6 +1,6 @@
 import type { Stats } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
 import { type Node as JsonNode, type ParseError, parseTree } from "jsonc-parser";
 
@@ -81,9 +81,16 @@ export interface ScopedUpdateMigrationCandidate {
   container: "quota-root" | "experimental.quotaToast";
 }
 
-export interface DiscoveredScopedUpdateMigrationCandidate extends ScopedUpdateMigrationCandidate {
+export interface ScopedUpdateMigrationBoundary {
+  path: string;
+  rootDir: string;
   realPath: string;
+  realRoot: string;
 }
+
+export interface DiscoveredScopedUpdateMigrationCandidate
+  extends ScopedUpdateMigrationCandidate,
+    ScopedUpdateMigrationBoundary {}
 
 interface ObjectProperty {
   value: JsonNode;
@@ -292,6 +299,52 @@ function isMissing(error: unknown): boolean {
   );
 }
 
+function containedBy(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+export async function resolveScopedUpdateMigrationBoundary(params: {
+  path: string;
+  rootDir: string;
+  expectedRealPath?: string;
+  expectedRealRoot?: string;
+  resolvedRealPath?: string;
+  writePath?: string;
+}): Promise<ScopedUpdateMigrationBoundary | null> {
+  const relativeParent = relative(params.rootDir, dirname(params.path));
+  if (relativeParent !== "" && !containedBy(params.rootDir, dirname(params.path))) {
+    return null;
+  }
+
+  let currentParent = params.rootDir;
+  for (const component of relativeParent === "" ? [] : relativeParent.split(sep)) {
+    currentParent = join(currentParent, component);
+    if ((await lstat(currentParent)).isSymbolicLink()) {
+      return null;
+    }
+  }
+
+  const [realRoot, realPath] = await Promise.all([
+    realpath(params.rootDir),
+    params.resolvedRealPath ?? realpath(params.path),
+  ]);
+  if (
+    (params.expectedRealRoot !== undefined && realRoot !== params.expectedRealRoot) ||
+    (params.expectedRealPath !== undefined && realPath !== params.expectedRealPath) ||
+    !containedBy(realRoot, realPath) ||
+    realPath === realRoot
+  ) {
+    return null;
+  }
+
+  if (params.writePath !== undefined && (await realpath(params.writePath)) !== realPath) {
+    return null;
+  }
+
+  return { path: params.path, rootDir: params.rootDir, realPath, realRoot };
+}
+
 export async function discoverExistingScopedUpdateMigrationCandidates(params: {
   globalRoots: readonly string[];
   workspaceRoot: string;
@@ -337,8 +390,27 @@ export async function discoverExistingScopedUpdateMigrationCandidates(params: {
     if (seenRealPaths.has(canonicalPath)) {
       continue;
     }
+
+    let boundary: ScopedUpdateMigrationBoundary | null;
+    try {
+      boundary = await resolveScopedUpdateMigrationBoundary({
+        ...candidate,
+        resolvedRealPath: canonicalPath,
+      });
+    } catch {
+      throw new Error(`Unable to resolve update migration path: ${candidate.path}`);
+    }
+    if (boundary === null) {
+      manualFindings.push({
+        kind: "migration-file-uninspectable",
+        path: candidate.path,
+        reason: "symlink",
+      });
+      continue;
+    }
+
     seenRealPaths.add(canonicalPath);
-    candidates.push({ ...candidate, realPath: canonicalPath });
+    candidates.push({ ...candidate, ...boundary });
   }
 
   return { candidates, manualFindings };

@@ -690,6 +690,30 @@ describe("scoped update application safety", () => {
     expect(readFileSync(second, "utf8")).toBe(original);
   });
 
+  it("rejects a migration parent replaced between planning and apply", async () => {
+    const f = fixture();
+    const sidecar = join(f.project, "opencode-quota", "quota-toast.jsonc");
+    const original = `{"opencodeZenDisplay":"default"}`;
+    const redirectedParent = join(f.root, "redirected-opencode-quota");
+    const redirectedSidecar = join(redirectedParent, "quota-toast.jsonc");
+    write(sidecar, original);
+    write(redirectedSidecar, original);
+    const plan = await planScopedUpdate({
+      cwd: f.project,
+      env: f.env,
+      homeDir: join(f.root, "home"),
+      platform: "linux",
+    });
+
+    rmSync(dirname(sidecar), { recursive: true });
+    symlinkSync(redirectedParent, dirname(sidecar));
+
+    await expect(applyScopedUpdatePlan(plan)).rejects.toThrow(
+      "Migration boundary changed before writing",
+    );
+    expect(readFileSync(redirectedSidecar, "utf8")).toBe(original);
+  });
+
   it.each([
     "read",
     "write",

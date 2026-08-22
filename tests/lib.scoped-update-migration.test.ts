@@ -366,7 +366,31 @@ describe("migration candidate discovery", () => {
     expect(result.manualFindings).toEqual([]);
   });
 
-  it("lets an exact package-selected symlink inherit package behavior and deduplicates its real path", async () => {
+  it("rejects a symlinked opencode-quota candidate parent", async () => {
+    const root = tempDir();
+    const globalRoot = join(root, "global");
+    const outsideParent = join(root, "outside-opencode-quota");
+    const candidatePath = join(globalRoot, "opencode-quota", "quota-toast.jsonc");
+    write(join(outsideParent, "quota-toast.jsonc"), `{"opencodeZenDisplay":"default"}`);
+    mkdirSync(globalRoot, { recursive: true });
+    symlinkSync(outsideParent, join(globalRoot, "opencode-quota"));
+
+    const result = await discoverExistingScopedUpdateMigrationCandidates({
+      globalRoots: [globalRoot],
+      workspaceRoot: join(root, "workspace"),
+    });
+
+    expect(result.candidates).toEqual([]);
+    expect(result.manualFindings).toEqual([
+      {
+        kind: "migration-file-uninspectable",
+        path: candidatePath,
+        reason: "symlink",
+      },
+    ]);
+  });
+
+  it("keeps a package-selected cross-root symlink out of migration discovery", async () => {
     const root = tempDir();
     const globalRoot = join(root, "global");
     const workspaceRoot = join(root, "workspace");
@@ -384,10 +408,17 @@ describe("migration candidate discovery", () => {
 
     expect(result.candidates).toHaveLength(1);
     expect(result.candidates[0]).toMatchObject({
-      path: symlinkPath,
+      path: workspaceFile,
       realPath: realpathSync(workspaceFile),
+      realRoot: realpathSync(workspaceRoot),
     });
-    expect(result.manualFindings).toEqual([]);
+    expect(result.manualFindings).toEqual([
+      {
+        kind: "migration-file-uninspectable",
+        path: symlinkPath,
+        reason: "symlink",
+      },
+    ]);
   });
 
   it("reports a distinct symlink before realpath dedupe, even when it targets a selected file", async () => {

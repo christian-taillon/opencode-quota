@@ -17,7 +17,9 @@ import {
   auditObsoleteUpdateSources,
   discoverExistingScopedUpdateMigrationCandidates,
   inspectLegacyDisplayDocument,
+  resolveScopedUpdateMigrationBoundary,
   type ScopedUpdateManualFinding,
+  type ScopedUpdateMigrationBoundary,
   type ScopedUpdateSafeAction,
   sortScopedUpdateManualFindings,
   sortScopedUpdateSafeActions,
@@ -48,6 +50,7 @@ export interface ScopedUpdateConfigSnapshot {
   updated: string;
   changed: boolean;
   roles: ScopedUpdateConfigRole[];
+  migrationBoundary?: ScopedUpdateMigrationBoundary;
 }
 
 export interface ScopedUpdatePlan {
@@ -173,6 +176,7 @@ interface ScopedUpdateWorkingDocument {
   replacements: number;
   displayMigrations: number;
   roles: Set<ScopedUpdateConfigRole>;
+  migrationBoundary?: ScopedUpdateMigrationBoundary;
 }
 
 const CONFIG_ROLE_ORDER: ScopedUpdateConfigRole[] = [
@@ -246,6 +250,7 @@ export async function planScopedUpdate(
     const existingDocument = workingDocuments.get(candidate.realPath);
     if (existingDocument) {
       existingDocument.roles.add("display-migration");
+      existingDocument.migrationBoundary = candidate;
       const inspection = inspectLegacyDisplayDocument({
         path: existingDocument.path,
         format: existingDocument.path.endsWith(".jsonc") ? "jsonc" : "json",
@@ -290,6 +295,7 @@ export async function planScopedUpdate(
       replacements: 0,
       displayMigrations: inspection.safeActions.length,
       roles: new Set(["display-migration"]),
+      migrationBoundary: candidate,
     });
   }
 
@@ -312,6 +318,7 @@ export async function planScopedUpdate(
       updated: document.updated,
       changed,
       roles: CONFIG_ROLE_ORDER.filter((role) => document.roles.has(role)),
+      ...(document.migrationBoundary ? { migrationBoundary: document.migrationBoundary } : {}),
     });
     if (changed) {
       configEdits.push({
@@ -520,6 +527,23 @@ export async function applyScopedUpdatePlan(
     }
     if (!current.equals(snapshot.originalBytes)) {
       throw failure("Config changed since preview:", snapshot.path);
+    }
+    if (snapshot.migrationBoundary) {
+      let boundary: ScopedUpdateMigrationBoundary | null;
+      try {
+        boundary = await resolveScopedUpdateMigrationBoundary({
+          path: snapshot.migrationBoundary.path,
+          rootDir: snapshot.migrationBoundary.rootDir,
+          expectedRealPath: snapshot.migrationBoundary.realPath,
+          expectedRealRoot: snapshot.migrationBoundary.realRoot,
+          writePath: snapshot.path,
+        });
+      } catch {
+        throw failure("Failed revalidating migration boundary for", snapshot.path);
+      }
+      if (boundary === null) {
+        throw failure("Migration boundary changed before writing", snapshot.path);
+      }
     }
     try {
       await writeText(snapshot.path, snapshot.updated);
