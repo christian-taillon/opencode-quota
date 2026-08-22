@@ -135,6 +135,11 @@ async function createRuntime(
     setSessionTokenError?: (error: unknown) => void;
     showToast?: (body: Record<string, unknown>) => Promise<unknown>;
     log?: (message: string, extra?: Record<string, unknown>) => Promise<void>;
+    roots?: () => {
+      workspaceRoot: string;
+      configRoot: string;
+      fallbackDirectory: string;
+    };
   } = {},
 ) {
   const { createQuotaToastRuntime } = await import("../src/lib/quota-toast-runtime.js");
@@ -152,11 +157,13 @@ async function createRuntime(
 
   const runtime = createQuotaToastRuntime({
     client: client as never,
-    roots: () => ({
-      workspaceRoot: process.cwd(),
-      configRoot: process.cwd(),
-      fallbackDirectory: process.cwd(),
-    }),
+    roots:
+      overrides.roots ??
+      (() => ({
+        workspaceRoot: process.cwd(),
+        configRoot: process.cwd(),
+        fallbackDirectory: process.cwd(),
+      })),
     resolveSessionMeta: async (sessionID) => {
       const response = await client.session.get({ path: { id: sessionID } });
       return {
@@ -304,6 +311,36 @@ describe("quota toast runtime state machine", () => {
       .map((call) => call[0]?.body?.extra?.delayMs);
     expect(scheduledDelays).toEqual([3_000, 15_000, 60_000, 300_000, 300_000]);
     expect(client.tui.showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries provider-returned transient errors", async () => {
+    vi.useFakeTimers();
+    mocks.loadConfig.mockResolvedValueOnce(makeToastConfig());
+    const provider = {
+      id: "openai",
+      isAvailable: vi.fn().mockResolvedValue(true),
+      fetch: vi
+        .fn()
+        .mockResolvedValueOnce({
+          attempted: true,
+          entries: [],
+          errors: [
+            { label: "OpenAI", message: "API error 503", retryable: true },
+            { label: "Other", message: "API error 403" },
+          ],
+        })
+        .mockResolvedValueOnce(makeProviderResult("Recovered", 68)),
+    };
+    mocks.getProviders.mockReturnValue([provider]);
+    const client = createClient({ modelID: "openai/gpt-5", providerID: "openai" });
+    const { runtime } = await createRuntime(client);
+
+    await runtime.handleTrigger({ sessionID: "session-transient-result", trigger: "session.idle" });
+    expect(provider.fetch).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(provider.fetch).toHaveBeenCalledTimes(2);
+    expect(getToastMessage(client, 1)).toContain("Recovered");
   });
 
   it("retries suppressed provider failures and availability failures", async () => {
@@ -759,6 +796,49 @@ describe("quota toast runtime state machine", () => {
       expect.objectContaining({ enabledProviders: [] }),
     );
     expect(mocks.observeQuotaResetNotifications).toHaveBeenCalledOnce();
+  });
+
+  it("does not reuse a rendered message across different provider configuration", async () => {
+    mocks.loadConfig.mockResolvedValueOnce(
+      makeToastConfig({
+        enabledProviders: ["quota-providers"],
+        quotaProviders: [
+          { id: "first", mode: "remote-api", url: "https://first.example", format: "quota-v1" },
+        ],
+      }),
+    );
+    const providerA = {
+      id: "quota-providers",
+      isAvailable: vi.fn().mockResolvedValue(true),
+      fetch: vi.fn().mockResolvedValue(makeProviderResult("First config", 81)),
+    };
+    mocks.getProviders.mockReturnValue([providerA]);
+    const clientA = createClient();
+    const { runtime: runtimeA } = await createRuntime(clientA);
+    await runtimeA.handleTrigger({ sessionID: "session-config-cache", trigger: "session.idle" });
+
+    mocks.loadConfig.mockResolvedValueOnce(
+      makeToastConfig({
+        enabledProviders: ["quota-providers"],
+        quotaProviders: [
+          { id: "second", mode: "remote-api", url: "https://second.example", format: "quota-v1" },
+        ],
+      }),
+    );
+    const providerB = {
+      id: "quota-providers",
+      isAvailable: vi.fn().mockResolvedValue(true),
+      fetch: vi.fn().mockResolvedValue(makeProviderResult("Second config", 74)),
+    };
+    mocks.getProviders.mockReturnValue([providerB]);
+    const clientB = createClient();
+    const { runtime: runtimeB } = await createRuntime(clientB);
+    await runtimeB.handleTrigger({ sessionID: "session-config-cache", trigger: "session.idle" });
+
+    expect(providerA.fetch).toHaveBeenCalledOnce();
+    expect(providerB.fetch).toHaveBeenCalledOnce();
+    expect(getToastMessage(clientB)).toContain("Second config");
+    expect(getToastMessage(clientB)).not.toContain("First config");
   });
 
   it("emits reset text only from a fresh collection", async () => {

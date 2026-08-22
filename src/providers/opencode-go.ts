@@ -114,10 +114,12 @@ export const opencodeGoProvider: QuotaProvider = {
     });
 
     if (!result.success) {
-      return withStatusDetails(attemptedErrorResult(OPENCODE_GO_PROVIDER_LABEL, result.error), [
-        ...statusDetails,
-        { key: "live_fetch_error", value: result.error },
-      ]);
+      return withStatusDetails(
+        attemptedErrorResult(OPENCODE_GO_PROVIDER_LABEL, result.error, {
+          retryable: result.retryable,
+        }),
+        [...statusDetails, { key: "live_fetch_error", value: result.error }],
+      );
     }
 
     const liveDetails = OPENCODE_GO_WINDOW_ORDER.map((window) => {

@@ -31,6 +31,10 @@ function contractError(message: string): OpenCodeGoResult {
   return { success: false, error: `Invalid OpenCode Go API response: ${message}` };
 }
 
+function isRetryableHttpStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
 function isValidOffsetIsoTimestamp(value: string): boolean {
   const match = OFFSET_ISO_TIMESTAMP.exec(value);
   if (!match) return false;
@@ -152,11 +156,13 @@ export async function queryOpenCodeGoQuota(
             return {
               success: false,
               error: `OpenCode Go API error ${response.status}: ${errorMessage(error, accessToken)}`,
+              retryable: isRetryableHttpStatus(response.status),
             };
           }
           return {
             success: false,
             error: `OpenCode Go API error ${response.status}: ${sanitizeMessage(text, accessToken)}`,
+            retryable: isRetryableHttpStatus(response.status),
           };
         }
 
@@ -170,6 +176,6 @@ export async function queryOpenCodeGoQuota(
       },
     });
   } catch (error) {
-    return { success: false, error: errorMessage(error, accessToken) };
+    return { success: false, error: errorMessage(error, accessToken), retryable: true };
   }
 }

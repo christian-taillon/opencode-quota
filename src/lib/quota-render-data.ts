@@ -270,6 +270,7 @@ function makeProviderFetchFailure(provider: QuotaProvider): QuotaProviderResult 
       {
         label: getQuotaProviderDisplayLabel(provider.id),
         message: "Failed to read quota data",
+        retryable: true,
       },
     ],
   };

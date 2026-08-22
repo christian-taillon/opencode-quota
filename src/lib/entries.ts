@@ -230,6 +230,8 @@ export interface QuotaToastError {
   /** Short label that will be rendered as "label: message". */
   label: string;
   message: string;
+  /** Whether a later refresh may succeed without user action. */
+  retryable?: boolean;
   /** Intentional diagnostics remain verbose but do not count as compact-status issues. */
   kind?: "intentional-filter";
 }

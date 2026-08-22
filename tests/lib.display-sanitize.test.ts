@@ -59,7 +59,7 @@ describe("sanitizeQuotaProviderResult", () => {
           value: "Active\u001b[31m",
         },
       ],
-      errors: [{ label: "Remote\u001b[31m", message: "failed\u001b[0m" }],
+      errors: [{ label: "Remote\u001b[31m", message: "failed\u001b[0m", retryable: true }],
       statusDetails: [{ key: "balance\u001b[31m", value: "USD 42.50\u001b[0m" }],
       rawDetails: [{ key: "usage\u001b[31m", value: "USD 2.50\u001b[0m" }],
       presentation: {
@@ -83,7 +83,7 @@ describe("sanitizeQuotaProviderResult", () => {
     });
     expect(sanitized.entries[2]).toMatchObject({ kind: "boolean", value: true });
     expect(sanitized.entries[3]).toMatchObject({ kind: "value", value: "Active" });
-    expect(sanitized.errors).toEqual([{ label: "Remote", message: "failed" }]);
+    expect(sanitized.errors).toEqual([{ label: "Remote", message: "failed", retryable: true }]);
     expect(sanitized.statusDetails).toEqual([{ key: "balance", value: "USD 42.50" }]);
     expect(sanitized.rawDetails).toEqual([{ key: "usage", value: "USD 2.50" }]);
     expect(sanitized.presentation).toEqual({

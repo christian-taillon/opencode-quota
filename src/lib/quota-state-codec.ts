@@ -297,9 +297,10 @@ function isQuotaToastEntry(value: unknown, safeText: boolean): value is QuotaToa
 function isQuotaToastError(value: unknown): boolean {
   if (!isRecord(value)) return false;
   return (
-    hasOnlyKeys(value, ["label", "message", "kind"]) &&
+    hasOnlyKeys(value, ["label", "message", "retryable", "kind"]) &&
     typeof value.label === "string" &&
     typeof value.message === "string" &&
+    (value.retryable === undefined || typeof value.retryable === "boolean") &&
     (value.kind === undefined || value.kind === "intentional-filter")
   );
 }
