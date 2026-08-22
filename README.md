@@ -40,16 +40,21 @@ After installation:
 ## Updating
 
 1. Close OpenCode.
-2. Run:
+2. Preview the update:
+
+   ```bash
+   npx @slkiser/opencode-quota@latest update --dry-run
+   ```
+
+3. Inspect the safe setting/cache changes and manual credential findings, then apply:
 
    ```bash
    npx @slkiser/opencode-quota@latest update
    ```
 
-3. Review the exact config edits and cache directories, then confirm.
 4. Restart OpenCode.
 
-Use `--dry-run` to preview without changing anything. Otherwise, `update` shows the OpenCode Quota config and cache changes and asks before applying them. It leaves your other plugins and settings alone. Use `--yes` only when you intentionally need a noninteractive run.
+The updater prints the complete preview before its own config or cache changes. `--yes` authorizes only the previewed safe config edits and manifest-verified cache cleanup; it never moves or deletes secrets. See [Updating safely](docs/readme/updating.md) for detailed behavior and manual credential steps.
 
 ## Choose your setup
 
