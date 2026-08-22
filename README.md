@@ -87,17 +87,11 @@ The updater prints the complete preview before its own config or cache changes. 
 
 More ways to use it:
 
-- Check quota from a terminal with `opencode-quota show`
-- Use JSON output in scripts, status bars, CI checks, and other tools
-- Send quota data to monitoring tools with optional OpenTelemetry metrics
-- Run the same slash commands in the TUI, Web, and Desktop
-- Tune reset countdown precision without changing the default compact display
-- Get a popup when quota becomes available again for the windows you choose via [`resetNotifications`](docs/readme/configuration.md#notify-when-quota-becomes-available-again)
-- Add a quota bar below the TUI prompt via [`tuiPromptBar.enabled`](docs/readme/configuration.md#tui-settings)
-- Prefer OpenCode Go's Five-hour, Weekly, or Monthly window in the collapsed sidebar without hiding expanded rows
-- Choose summary or detailed provider-neutral accounting with [`accountingDetail`](docs/readme/configuration.md#show-accounting-detail)
-- Choose current-session or descendant-tree token totals across `/quota`, toasts, the sidebar, and the compact input line
-- Diagnose authentication, quota sources, pricing, and maintainer notices
+- Check quota anywhere: use `opencode-quota show` in a terminal or the same slash commands in the TUI, Web, and Desktop.
+- Automate quota checks with JSON output for scripts, status bars, and CI. Optional OpenTelemetry metrics support monitoring tools.
+- Customize the display with [`tuiPromptBar.enabled`](docs/readme/configuration.md#tui-settings), OpenCode Go's preferred collapsed-sidebar window, reset precision, and [`accountingDetail`](docs/readme/configuration.md#show-accounting-detail).
+- Choose current-session or descendant-tree token totals. Get reset popups for selected windows with [`resetNotifications`](docs/readme/configuration.md#notify-when-quota-becomes-available-again).
+- Troubleshoot authentication, quota sources, pricing, and maintainer notices.
 
 See [Configuration](docs/readme/configuration.md) for UI options and [Manual install](docs/readme/manual-install.md) for setup details.
 
