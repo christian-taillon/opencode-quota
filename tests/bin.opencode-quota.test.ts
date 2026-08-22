@@ -132,6 +132,10 @@ describe("opencode-quota bin", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("Usage:"));
     expect(log).toHaveBeenCalledWith(expect.stringContaining("opencode-quota show"));
     expect(log).toHaveBeenCalledWith(expect.stringContaining("opencode-quota status"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("responsible preview"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("Credentials are report-only"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("safe setting/package-cache changes"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("Apply only safe setting/cache work"));
     log.mockRestore();
   });
 

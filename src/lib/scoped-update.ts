@@ -7,6 +7,7 @@ import {
   findGitWorktreeRoot,
   resolveExistingConfigPath,
 } from "./config-file-utils.js";
+import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
 import { editConfigDocumentPaths, parseConfigDocument } from "./opencode-config-editor.js";
 import {
   getOpencodeRuntimeDirCandidates,
@@ -381,6 +382,92 @@ async function removeVerifiedCacheCandidate(path: string): Promise<"removed" | "
   }
 }
 
+function displayUpdatePath(path: string): string {
+  return sanitizeSingleLineDisplayText(path);
+}
+
+function formatSafeAction(action: ScopedUpdateSafeAction): string {
+  const path = displayUpdatePath(action.path);
+  if (action.kind === "package-spec") {
+    const noun = action.replacements === 1 ? "replacement" : "replacements";
+    return `  edit ${path} (${action.replacements} package ${noun})`;
+  }
+
+  switch (action.outcome) {
+    case "set-and-remove-old":
+      return `  edit ${path}: map opencodeZenDisplay: ${action.from} to accountingDetail: ${action.to}`;
+    case "remove-redundant-old":
+      return `  edit ${path}: remove redundant opencodeZenDisplay: ${action.from}; keep accountingDetail: ${action.to}`;
+    case "keep-current-and-remove-old":
+      return `  edit ${path}: keep current accountingDetail; remove obsolete ignored opencodeZenDisplay: ${action.from}`;
+  }
+}
+
+const OBSOLETE_GO_GUIDANCE =
+  "OpenCode Go no longer uses this workspace/cookie source, and it cannot be converted into the official API key. Configure OPENCODE_API_KEY, trusted global provider.opencode-go.options.apiKey, fallback provider.opencode.options.apiKey, or run opencode auth login -p opencode-go. This updater will not read, copy, or delete credentials; remove the old variable/file manually after the supported key works.";
+
+function formatManualFinding(finding: ScopedUpdateManualFinding): string {
+  switch (finding.kind) {
+    case "obsolete-go-env":
+      return `  ${finding.name}: ${OBSOLETE_GO_GUIDANCE}`;
+    case "obsolete-go-file":
+      return `  ${displayUpdatePath(finding.path)}: ${OBSOLETE_GO_GUIDANCE}`;
+    case "ambiguous-zen-env": {
+      const names = finding.names.join(" and ");
+      const suggestedPath = displayUpdatePath(finding.suggestedPath);
+      return `  ${names}: These environment names may be from an older OpenCode Zen setup, but they may also belong to OpenCode's workspace feature. Current quota code ignores them, and no supported global opencode-quota/opencode.json was found. Review the variables, then create and protect the supported file manually only if they are Zen credentials. Suggested path: ${suggestedPath}. This updater will not read, print, or move their values.`;
+    }
+    case "display-migration-manual": {
+      const path = displayUpdatePath(finding.path);
+      switch (finding.reason) {
+        case "unsupported-legacy-value":
+          return `  ${path}: opencodeZenDisplay has no supported equivalent; review it manually without exposing its value.`;
+        case "invalid-accounting-detail":
+          return `  ${path}: accountingDetail is invalid; fix it, then remove opencodeZenDisplay manually.`;
+        case "duplicate-key":
+          return `  ${path}: duplicate display keys require manual review.`;
+        case "unsupported-structure":
+          return `  ${path}: experimental.quotaToast is structurally ambiguous and requires manual review.`;
+      }
+      throw new Error("Unknown display migration finding");
+    }
+    case "migration-file-uninspectable": {
+      const path = displayUpdatePath(finding.path);
+      switch (finding.reason) {
+        case "invalid-json":
+          return `  ${path}: the migration file contains invalid JSON/JSONC and could not be inspected.`;
+        case "unsupported-root":
+          return `  ${path}: the migration file root is not an object and requires manual review.`;
+        case "symlink":
+          return `  ${path}: the migration path is a symlink and will not be changed automatically.`;
+      }
+      throw new Error("Unknown migration file finding");
+    }
+  }
+}
+
+export function formatScopedUpdatePreview(plan: ScopedUpdatePlan): string[] {
+  const lines = ["Responsible OpenCode Quota update preview"];
+
+  if (plan.safeActions.length > 0) {
+    lines.push("", "Safe changes this command can make:");
+    lines.push(...plan.safeActions.map(formatSafeAction));
+  }
+
+  if (plan.manualFindings.length > 0) {
+    lines.push("", "Manual actions — this command will not change these sources:");
+    lines.push(...plan.manualFindings.map(formatManualFinding));
+  }
+
+  if (plan.authoritativeLatest && plan.cacheCandidates.length > 0) {
+    lines.push("", "Package-cache candidates (removed only after verification):");
+    lines.push(...plan.cacheCandidates.map((path) => `  ${displayUpdatePath(path)}`));
+  }
+
+  lines.push("", "No configuration or package-cache changes have been made yet.");
+  return lines;
+}
+
 export async function applyScopedUpdatePlan(
   plan: ScopedUpdatePlan,
   options: {
@@ -399,11 +486,16 @@ export async function applyScopedUpdatePlan(
   const writtenPaths: string[] = [];
   const failure = (action: string, path: string): ScopedUpdateError => {
     const changed =
-      writtenPaths.length > 0 ? ` Changed before failure: ${writtenPaths.join(", ")}.` : "";
-    return new ScopedUpdateError(`${action} ${path}; no cache was deleted.${changed}`, {
-      path,
-      writtenPaths: [...writtenPaths],
-    });
+      writtenPaths.length > 0
+        ? ` Changed before failure: ${writtenPaths.map(displayUpdatePath).join(", ")}.`
+        : "";
+    return new ScopedUpdateError(
+      `${action} ${displayUpdatePath(path)}; no cache was deleted.${changed}`,
+      {
+        path,
+        writtenPaths: [...writtenPaths],
+      },
+    );
   };
 
   for (const snapshot of plan.configSnapshots) {
@@ -416,7 +508,19 @@ export async function applyScopedUpdatePlan(
     if (!current.equals(snapshot.originalBytes)) {
       throw failure("Config changed since preview:", snapshot.path);
     }
+  }
+
+  for (const snapshot of plan.configSnapshots) {
     if (!snapshot.changed) continue;
+    let current: Buffer;
+    try {
+      current = await readBytes(snapshot.path);
+    } catch {
+      throw failure("Failed re-reading before write", snapshot.path);
+    }
+    if (!current.equals(snapshot.originalBytes)) {
+      throw failure("Config changed since preview:", snapshot.path);
+    }
     try {
       await writeText(snapshot.path, snapshot.updated);
       writtenPaths.push(snapshot.path);
@@ -425,7 +529,17 @@ export async function applyScopedUpdatePlan(
     }
   }
 
-  await options.beforeCacheDeletion?.();
+  try {
+    await options.beforeCacheDeletion?.();
+  } catch {
+    const changed =
+      writtenPaths.length > 0
+        ? ` Changed before failure: ${writtenPaths.map(displayUpdatePath).join(", ")}.`
+        : "";
+    throw new ScopedUpdateError(`Failed before cache deletion; no cache was deleted.${changed}`, {
+      writtenPaths: [...writtenPaths],
+    });
+  }
 
   let authoritativeLatest = false;
   for (const snapshot of plan.configSnapshots) {
@@ -474,22 +588,30 @@ export async function runScopedUpdateCommand(
   const log = params.log ?? console.log;
   try {
     const plan = await planScopedUpdate(params);
-    log("Scoped OpenCode Quota update preview:");
-    for (const edit of plan.configEdits) {
-      log(`  edit ${edit.path} (${edit.replacements} replacement(s))`);
-    }
-    for (const candidate of plan.cacheCandidates) log(`  cache candidate ${candidate}`);
-    if (plan.configPaths.length === 0 || !plan.authoritativeLatest) {
-      log("OpenCode Quota update is already current. No files changed.");
-      log(`If OpenCode Quota helps, please consider a star: ${GITHUB_REPO_URL}`);
-      return 0;
-    }
+    for (const line of formatScopedUpdatePreview(plan)) log(line);
+
+    const hasConfigChanges = plan.configSnapshots.some((snapshot) => snapshot.changed);
+    const hasAutomaticWork = hasConfigChanges || plan.authoritativeLatest;
+
     if (dryRun) {
       log(
-        "OpenCode Quota update preview complete — no files changed. Run npx @slkiser/opencode-quota@latest update to apply.",
+        "Responsible update preview complete — no configuration or package-cache changes were made.",
       );
       return 0;
     }
+
+    if (!hasAutomaticWork) {
+      if (plan.manualFindings.length > 0) {
+        log(
+          "No automatic changes are available. Complete the manual actions above, then rerun update.",
+        );
+      } else {
+        log("OpenCode Quota update is already current. No files changed.");
+        log(`If OpenCode Quota helps, please consider a star: ${GITHUB_REPO_URL}`);
+      }
+      return 0;
+    }
+
     if (!yes) {
       const confirm =
         params.confirm ??
@@ -499,29 +621,37 @@ export async function runScopedUpdateCommand(
           return !prompts.isCancel(answer) && answer === true;
         });
       if (
-        !(await confirm("Apply these config edits and delete only verified cache directories?"))
+        !(await confirm(
+          "Apply the safe config changes above and remove only manifest-verified package-cache directories?",
+        ))
       ) {
         log("OpenCode Quota update cancelled — no files changed.");
         return 0;
       }
     }
+
     const result = await applyScopedUpdatePlan(plan);
-    for (const path of result.writtenPaths) log(`Updated ${path}`);
-    for (const path of result.removedCachePaths) log(`Removed ${path}`);
-    for (const path of result.skippedCachePaths) log(`Skipped unverified cache candidate ${path}`);
+    for (const path of result.writtenPaths) log(`Updated ${displayUpdatePath(path)}`);
+    for (const path of result.removedCachePaths) log(`Removed ${displayUpdatePath(path)}`);
+    for (const path of result.skippedCachePaths) {
+      log(`Skipped unverified cache candidate ${displayUpdatePath(path)}`);
+    }
     log("OpenCode Quota update complete.");
-    log(`Configured paths: ${plan.configPaths.join(", ")}`);
+    if (plan.configPaths.length > 0) {
+      log(`Configured paths: ${plan.configPaths.map(displayUpdatePath).join(", ")}`);
+    }
     log("Restart OpenCode and run /quota.");
     log(`If OpenCode Quota helps, please consider a star: ${GITHUB_REPO_URL}`);
     return 0;
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    const rawReason = error instanceof Error ? error.message : String(error);
+    const reason = sanitizeSingleLineDisplayText(rawReason) || "Unknown update failure";
     log(`OpenCode Quota update failed: ${reason}`);
     const writtenPaths =
       error instanceof ScopedUpdateError ? (error.details?.writtenPaths ?? []) : [];
     log(
       writtenPaths.length > 0
-        ? `Files changed before failure: ${writtenPaths.join(", ")}. Fix the reason above, then rerun update.`
+        ? `Files changed before failure: ${writtenPaths.map(displayUpdatePath).join(", ")}. Fix the reason above, then rerun update.`
         : "No files changed. Fix the reason above, then rerun update.",
     );
     return 1;
