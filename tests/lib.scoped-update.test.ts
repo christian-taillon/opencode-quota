@@ -484,6 +484,80 @@ describe("scoped update config planning", () => {
     );
     expect(JSON.stringify(plan.manualFindings)).not.toContain("secret-canary");
   });
+
+  it("redacts every credential and parser canary from public planner and CLI surfaces", async () => {
+    const f = fixture();
+    const config = join(f.project, "opencode.json");
+    const malformedSidecar = join(f.project, "opencode-quota", "quota-toast.jsonc");
+    const obsoleteGoFile = join(f.global, "opencode-quota", "opencode-go.json");
+    const supportedZenFile = join(f.global, "opencode-quota", "opencode.json");
+    const authFile = join(f.global, "auth.json");
+    const canaries = [
+      "go-workspace-value-canary",
+      "go-cookie-value-canary",
+      "zen-workspace-value-canary",
+      "zen-cookie-value-canary",
+      "legacy-go-file-content-canary",
+      "supported-zen-file-content-canary",
+      "provider-api-key-canary",
+      "auth-json-key-canary",
+      "invalid-display-value-canary",
+      "migration-parser-content-canary",
+    ];
+    write(
+      config,
+      `{"plugin":["@slkiser/opencode-quota@3.11.1"],"provider":{"opencode-go":{"options":{"apiKey":"provider-api-key-canary"}}},"experimental":{"quotaToast":{"opencodeZenDisplay":"invalid-display-value-canary"}}}`,
+    );
+    write(malformedSidecar, `{"opencodeZenDisplay":"migration-parser-content-canary",`);
+    write(obsoleteGoFile, `{"authCookie":"legacy-go-file-content-canary"}`);
+    write(
+      supportedZenFile,
+      `{"workspaceId":"supported-zen-file-content-canary","authCookie":"supported-zen-file-content-canary"}`,
+    );
+    write(authFile, `{"opencode-go":{"type":"api","key":"auth-json-key-canary"}}`);
+    const env = {
+      ...f.env,
+      OPENCODE_GO_WORKSPACE_ID: "go-workspace-value-canary",
+      OPENCODE_GO_AUTH_COOKIE: "go-cookie-value-canary",
+      OPENCODE_WORKSPACE_ID: "zen-workspace-value-canary",
+      OPENCODE_AUTH_COOKIE: "zen-cookie-value-canary",
+    };
+    const params = {
+      cwd: f.project,
+      env,
+      homeDir: join(f.root, "home"),
+      platform: "linux" as const,
+    };
+
+    const plan = await planScopedUpdate(params);
+    const preview = formatScopedUpdatePreview(plan);
+    const log = vi.fn();
+    expect(await runScopedUpdateCommand({ ...params, argv: ["--dry-run"], log })).toBe(0);
+    const publicSuccess = JSON.stringify({
+      safeActions: plan.safeActions,
+      manualFindings: plan.manualFindings,
+      preview,
+      logs: log.mock.calls,
+    });
+    for (const canary of canaries) expect(publicSuccess).not.toContain(canary);
+
+    const failed = fixture();
+    write(
+      join(failed.project, "opencode.jsonc"),
+      `{"provider":{"x":{"apiKey":"raw-parser-error-canary"}}, invalid`,
+    );
+    const failedParams = {
+      cwd: failed.project,
+      env: failed.env,
+      homeDir: join(failed.root, "home"),
+      platform: "linux" as const,
+    };
+    const planningError = await planScopedUpdate(failedParams).catch((error: unknown) => error);
+    expect(String(planningError)).not.toContain("raw-parser-error-canary");
+    const errorLog = vi.fn();
+    expect(await runScopedUpdateCommand({ ...failedParams, log: errorLog })).toBe(1);
+    expect(errorLog.mock.calls.flat().join("\n")).not.toContain("raw-parser-error-canary");
+  });
 });
 
 describe("scoped update application safety", () => {
