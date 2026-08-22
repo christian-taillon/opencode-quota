@@ -45,6 +45,7 @@ function fixture() {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const path of tempDirs.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
@@ -158,6 +159,323 @@ describe("scoped update config planning", () => {
     await applyScopedUpdatePlan(await planScopedUpdate(params));
     expect((await planScopedUpdate(params)).configEdits).toEqual([]);
     expect(readFileSync(config, "utf8")).toBe(`{"plugin":["${QUOTA_LATEST_SPEC}","other"]}`);
+  });
+
+  it("combines package and display changes into one immutable document plan", async () => {
+    const f = fixture();
+    const config = join(f.project, "opencode.jsonc");
+    write(
+      config,
+      `{
+  // keep package and display formatting
+  "plugin": ["@slkiser/opencode-quota@3.11.1"],
+  "experimental": {
+    "quotaToast": {
+      "opencodeZenDisplay": "default",
+      "unrelated": true,
+    },
+  },
+}
+`,
+    );
+
+    const plan = await planScopedUpdate({
+      cwd: f.project,
+      env: f.env,
+      homeDir: join(f.root, "home"),
+      platform: "linux",
+    });
+
+    expect(plan.configPaths).toEqual([config]);
+    expect(plan.configSnapshots).toHaveLength(1);
+    expect(plan.configSnapshots[0]).toMatchObject({
+      path: config,
+      changed: true,
+      roles: ["package-authority", "package-edit", "display-migration"],
+    });
+    expect(plan.configEdits).toHaveLength(1);
+    expect(plan.configEdits[0]).toMatchObject({
+      path: config,
+      replacements: 1,
+      displayMigrations: 1,
+    });
+    expect(plan.configEdits[0]?.updated).toContain(QUOTA_LATEST_SPEC);
+    expect(plan.configEdits[0]?.updated).toContain('"accountingDetail": "summary"');
+    expect(plan.configEdits[0]?.updated).not.toContain("opencodeZenDisplay");
+    expect(plan.configEdits[0]?.updated).toContain("// keep package and display formatting");
+    expect(plan.safeActions).toEqual(
+      expect.arrayContaining([
+        { kind: "package-spec", path: config, replacements: 1 },
+        expect.objectContaining({
+          kind: "accounting-detail-migration",
+          path: config,
+          from: "default",
+          to: "summary",
+        }),
+      ]),
+    );
+  });
+
+  it("plans and applies a migration-only sidecar without granting cache authority", async () => {
+    const f = fixture();
+    const sidecar = join(f.project, "opencode-quota", "quota-toast.jsonc");
+    write(sidecar, `{"opencodeZenDisplay":"detailed"}`);
+    const cache = join(f.cache, "packages", "@slkiser", "opencode-quota@latest");
+    const manifest = join(cache, "node_modules", "@slkiser", "opencode-quota", "package.json");
+    write(manifest, `{"name":"@slkiser/opencode-quota"}`);
+
+    const plan = await planScopedUpdate({
+      cwd: f.project,
+      env: f.env,
+      homeDir: join(f.root, "home"),
+      platform: "linux",
+    });
+
+    expect(plan.configPaths).toEqual([]);
+    expect(plan.authoritativeLatest).toBe(false);
+    expect(plan.configSnapshots).toEqual([
+      expect.objectContaining({
+        path: sidecar,
+        changed: true,
+        roles: ["display-migration"],
+      }),
+    ]);
+    expect(plan.configEdits).toEqual([
+      expect.objectContaining({
+        path: sidecar,
+        replacements: 0,
+        displayMigrations: 1,
+      }),
+    ]);
+
+    const result = await applyScopedUpdatePlan(plan);
+    expect(result.writtenPaths).toEqual([sidecar]);
+    expect(result.removedCachePaths).toEqual([]);
+    expect(readFileSync(manifest, "utf8")).toContain("@slkiser/opencode-quota");
+    expect(readFileSync(sidecar, "utf8")).toContain('"accountingDetail": "detailed"');
+  });
+
+  it("keeps malformed migration-only files manual without blocking package work", async () => {
+    const f = fixture();
+    const config = join(f.project, "opencode.json");
+    const malformed = join(f.project, "opencode-quota", "quota-toast.jsonc");
+    write(config, `{"plugin":["@slkiser/opencode-quota@3.11.1"]}`);
+    write(malformed, `{"opencodeZenDisplay":"parser-secret",`);
+
+    const plan = await planScopedUpdate({
+      cwd: f.project,
+      env: f.env,
+      homeDir: join(f.root, "home"),
+      platform: "linux",
+    });
+
+    expect(plan.configEdits).toEqual([
+      expect.objectContaining({ path: config, replacements: 1, displayMigrations: 0 }),
+    ]);
+    expect(plan.configSnapshots.map((snapshot) => snapshot.path)).toEqual([config]);
+    expect(plan.manualFindings).toContainEqual({
+      kind: "migration-file-uninspectable",
+      path: malformed,
+      reason: "invalid-json",
+    });
+    expect(JSON.stringify(plan.manualFindings)).not.toContain("parser-secret");
+  });
+
+  it("preserves package-first then explicit migration-only snapshot order", async () => {
+    const f = fixture();
+    const projectConfig = join(f.project, "opencode.json");
+    const globalConfig = join(f.global, "tui.json");
+    const globalSidecar = join(f.global, "opencode-quota", "quota-toast.json");
+    const workspaceSidecar = join(f.project, "opencode-quota", "quota-toast.jsonc");
+    write(projectConfig, `{"plugin":["@slkiser/opencode-quota@3.11.1"]}`);
+    write(globalConfig, `{"plugin":["@slkiser/opencode-quota@latest"]}`);
+    write(globalSidecar, `{"opencodeZenDisplay":"default"}`);
+    write(workspaceSidecar, `{"opencodeZenDisplay":"detailed"}`);
+
+    const plan = await planScopedUpdate({
+      cwd: join(f.project, "nested", "deeper"),
+      env: f.env,
+      homeDir: join(f.root, "home"),
+      platform: "linux",
+    });
+
+    expect(plan.configPaths).toEqual([projectConfig, globalConfig]);
+    expect(plan.configSnapshots.map((snapshot) => snapshot.path)).toEqual([
+      projectConfig,
+      globalConfig,
+      globalSidecar,
+      workspaceSidecar,
+    ]);
+  });
+
+  it("uses injected runtime roots and the enclosing Git worktree, not ambient env", async () => {
+    const f = fixture();
+    const injectedRoot = join(f.root, "injected-config");
+    const ambientRoot = join(f.root, "ambient-config");
+    const injectedConfig = join(injectedRoot, "opencode.json");
+    const ambientConfig = join(ambientRoot, "opencode.json");
+    const workspaceSidecar = join(f.project, "opencode-quota", "quota-toast.json");
+    write(injectedConfig, `{"plugin":["@slkiser/opencode-quota@3.11.1"]}`);
+    write(ambientConfig, `{"plugin":["@slkiser/opencode-quota@3.11.1"]}`);
+    write(workspaceSidecar, `{"opencodeZenDisplay":"default"}`);
+    vi.stubEnv("OPENCODE_CONFIG_DIR", ambientRoot);
+
+    const plan = await planScopedUpdate({
+      cwd: join(f.project, "nested", "deeper"),
+      env: { ...f.env, OPENCODE_CONFIG_DIR: injectedRoot },
+      homeDir: join(f.root, "home"),
+      platform: "linux",
+    });
+
+    expect(plan.configPaths).toEqual([injectedConfig]);
+    expect(plan.configSnapshots.map((snapshot) => snapshot.path)).toEqual([
+      injectedConfig,
+      workspaceSidecar,
+    ]);
+    expect(plan.configSnapshots.some((snapshot) => snapshot.path === ambientConfig)).toBe(false);
+  });
+
+  it("inspects shadowed host siblings while retaining package JSONC authority", async () => {
+    const f = fixture();
+    const selected = join(f.project, "opencode.jsonc");
+    const shadowed = join(f.project, "opencode.json");
+    write(selected, `{"plugin":["@slkiser/opencode-quota@latest"]}`);
+    write(shadowed, `{"experimental":{"quotaToast":{"opencodeZenDisplay":"default"}}}`);
+
+    const plan = await planScopedUpdate({
+      cwd: f.project,
+      env: f.env,
+      homeDir: join(f.root, "home"),
+      platform: "linux",
+    });
+
+    expect(plan.configPaths).toEqual([selected]);
+    expect(plan.configSnapshots.map((snapshot) => snapshot.path)).toEqual([selected, shadowed]);
+    expect(plan.configSnapshots[0]?.roles).toEqual(["package-authority", "display-migration"]);
+    expect(plan.configSnapshots[1]?.roles).toEqual(["display-migration"]);
+    expect(plan.configEdits).toEqual([
+      expect.objectContaining({ path: shadowed, replacements: 0, displayMigrations: 1 }),
+    ]);
+  });
+
+  it("keeps package specs and cache derivation package-authority-only", async () => {
+    const f = fixture();
+    const selected = join(f.project, "opencode.jsonc");
+    const migrationOnly = join(f.project, "opencode.json");
+    const shadowedSpec = "@slkiser/opencode-quota@3.11.1";
+    write(selected, `{"plugin":["other-plugin"]}`);
+    write(
+      migrationOnly,
+      `{"plugin":["${shadowedSpec}"],"experimental":{"quotaToast":{"opencodeZenDisplay":"default"}}}`,
+    );
+
+    const plan = await planScopedUpdate({
+      cwd: f.project,
+      env: f.env,
+      homeDir: join(f.root, "home"),
+      platform: "linux",
+    });
+
+    expect(plan.configPaths).toEqual([selected]);
+    expect(plan.foundSpecs).toEqual([]);
+    expect(plan.authoritativeLatest).toBe(false);
+    expect(plan.cacheCandidates.some((path) => path.endsWith("opencode-quota@3.11.1"))).toBe(false);
+    expect(plan.configEdits).toEqual([
+      expect.objectContaining({ path: migrationOnly, replacements: 0, displayMigrations: 1 }),
+    ]);
+  });
+
+  it("composes a package-selected alias with a separately discovered real document once", async () => {
+    const f = fixture();
+    const packageAlias = join(f.project, "opencode.json");
+    const realConfig = join(f.global, "opencode.json");
+    write(
+      realConfig,
+      `{"plugin":["@slkiser/opencode-quota@3.11.1"],"experimental":{"quotaToast":{"opencodeZenDisplay":"default"}}}`,
+    );
+    mkdirSync(dirname(packageAlias), { recursive: true });
+    symlinkSync(realConfig, packageAlias);
+
+    const plan = await planScopedUpdate({
+      cwd: f.project,
+      env: f.env,
+      homeDir: join(f.root, "home"),
+      platform: "linux",
+    });
+
+    expect(plan.configPaths).toEqual([packageAlias]);
+    expect(plan.configSnapshots).toEqual([
+      expect.objectContaining({
+        path: packageAlias,
+        changed: true,
+        roles: ["package-authority", "package-edit", "display-migration"],
+      }),
+    ]);
+    expect(plan.configEdits).toEqual([
+      expect.objectContaining({
+        path: packageAlias,
+        replacements: 1,
+        displayMigrations: 1,
+      }),
+    ]);
+    expect(plan.configEdits[0]?.updated).toContain(QUOTA_LATEST_SPEC);
+    expect(plan.configEdits[0]?.updated).toContain('"accountingDetail": "summary"');
+    expect(plan.manualFindings).not.toContainEqual(
+      expect.objectContaining({ kind: "migration-file-uninspectable" }),
+    );
+  });
+
+  it("reports a distinct migration symlink alias after package realpath dedupe", async () => {
+    const f = fixture();
+    const projectConfig = join(f.project, "opencode.json");
+    const globalAlias = join(f.global, "opencode.json");
+    write(projectConfig, `{"plugin":["@slkiser/opencode-quota@latest"]}`);
+    mkdirSync(dirname(globalAlias), { recursive: true });
+    symlinkSync(projectConfig, globalAlias);
+
+    const plan = await planScopedUpdate({
+      cwd: f.project,
+      env: f.env,
+      homeDir: join(f.root, "home"),
+      platform: "linux",
+    });
+
+    expect(plan.configPaths).toEqual([projectConfig]);
+    expect(plan.configSnapshots).toHaveLength(1);
+    expect(plan.manualFindings).toContainEqual({
+      kind: "migration-file-uninspectable",
+      path: globalAlias,
+      reason: "symlink",
+    });
+  });
+
+  it("attaches presence-only credential findings without secret values", async () => {
+    const f = fixture();
+    const obsoleteFile = join(f.global, "opencode-quota", "opencode-go.json");
+    write(obsoleteFile, `{"authCookie":"file-secret-canary"}`);
+
+    const plan = await planScopedUpdate({
+      cwd: f.project,
+      env: {
+        ...f.env,
+        OPENCODE_GO_AUTH_COOKIE: "go-secret-canary",
+        OPENCODE_WORKSPACE_ID: "zen-secret-canary",
+      },
+      homeDir: join(f.root, "home"),
+      platform: "linux",
+    });
+
+    expect(plan.manualFindings).toEqual(
+      expect.arrayContaining([
+        { kind: "obsolete-go-env", name: "OPENCODE_GO_AUTH_COOKIE" },
+        { kind: "obsolete-go-file", path: obsoleteFile },
+        expect.objectContaining({
+          kind: "ambiguous-zen-env",
+          names: ["OPENCODE_WORKSPACE_ID"],
+        }),
+      ]),
+    );
+    expect(JSON.stringify(plan.manualFindings)).not.toContain("secret-canary");
   });
 });
 

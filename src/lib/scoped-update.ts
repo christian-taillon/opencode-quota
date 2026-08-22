@@ -1,5 +1,5 @@
 import { lstat, readFile, realpath, rm } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 
 import { writeTextAtomic } from "./atomic-json.js";
 import {
@@ -12,6 +12,15 @@ import {
   getOpencodeRuntimeDirCandidates,
   getOpencodeRuntimeDirs,
 } from "./opencode-runtime-paths.js";
+import {
+  auditObsoleteUpdateSources,
+  discoverExistingScopedUpdateMigrationCandidates,
+  inspectLegacyDisplayDocument,
+  type ScopedUpdateManualFinding,
+  type ScopedUpdateSafeAction,
+  sortScopedUpdateManualFindings,
+  sortScopedUpdateSafeActions,
+} from "./scoped-update-migration.js";
 
 export const QUOTA_PACKAGE_NAME = "@slkiser/opencode-quota";
 export const QUOTA_LATEST_SPEC = `${QUOTA_PACKAGE_NAME}@latest`;
@@ -20,12 +29,15 @@ const GITHUB_REPO_URL = "https://github.com/slkiser/opencode-quota";
 const EXACT_SEMVER =
   /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
+export type ScopedUpdateConfigRole = "package-authority" | "package-edit" | "display-migration";
+
 export interface ScopedUpdateConfigEdit {
   path: string;
   original: string;
   originalBytes: Buffer;
   updated: string;
   replacements: number;
+  displayMigrations: number;
 }
 
 export interface ScopedUpdateConfigSnapshot {
@@ -34,6 +46,7 @@ export interface ScopedUpdateConfigSnapshot {
   expectedBytes: Buffer;
   updated: string;
   changed: boolean;
+  roles: ScopedUpdateConfigRole[];
 }
 
 export interface ScopedUpdatePlan {
@@ -43,6 +56,8 @@ export interface ScopedUpdatePlan {
   foundSpecs: string[];
   cacheCandidates: string[];
   authoritativeLatest: boolean;
+  safeActions: ScopedUpdateSafeAction[];
+  manualFindings: ScopedUpdateManualFinding[];
 }
 
 export interface ScopedUpdateResult {
@@ -75,16 +90,6 @@ export function sanitizeOpenCodePackageSpec(
   return Array.from(spec, (char) =>
     new Set(["<", ">", ":", '"', "|", "?", "*"]).has(char) || char.charCodeAt(0) < 32 ? "_" : char,
   ).join("");
-}
-
-function effectiveGlobalConfigDir(params: { env: NodeJS.ProcessEnv; homeDir?: string }): string {
-  const fallback = getOpencodeRuntimeDirs({
-    env: params.env,
-    homeDir: params.homeDir,
-  }).configDir;
-  const configured = params.env.OPENCODE_CONFIG_DIR?.trim();
-  if (!configured) return fallback;
-  return isAbsolute(configured) ? configured : resolve(fallback, configured);
 }
 
 function selectedConfigPaths(root: string): string[] {
@@ -159,6 +164,22 @@ function updateConfig(
   return { updated, replacements, specs };
 }
 
+interface ScopedUpdateWorkingDocument {
+  path: string;
+  original: string;
+  originalBytes: Buffer;
+  updated: string;
+  replacements: number;
+  displayMigrations: number;
+  roles: Set<ScopedUpdateConfigRole>;
+}
+
+const CONFIG_ROLE_ORDER: ScopedUpdateConfigRole[] = [
+  "package-authority",
+  "package-edit",
+  "display-migration",
+];
+
 export async function planScopedUpdate(
   params: {
     cwd?: string;
@@ -170,46 +191,141 @@ export async function planScopedUpdate(
   const cwd = params.cwd ?? process.cwd();
   const env = params.env ?? process.env;
   const projectRoot = findGitWorktreeRoot(cwd) ?? cwd;
-  const globalRoot = effectiveGlobalConfigDir({ env, homeDir: params.homeDir });
+  const primaryRuntime = getOpencodeRuntimeDirs({ env, homeDir: params.homeDir });
+  const runtime = getOpencodeRuntimeDirCandidates({
+    platform: params.platform,
+    env,
+    homeDir: params.homeDir,
+    primary: primaryRuntime,
+  });
   const configPaths = await dedupeByRealPath([
     ...selectedConfigPaths(projectRoot),
-    ...selectedConfigPaths(globalRoot),
+    ...selectedConfigPaths(primaryRuntime.configDir),
   ]);
 
-  const configEdits: ScopedUpdateConfigEdit[] = [];
-  const configSnapshots: ScopedUpdateConfigSnapshot[] = [];
+  const workingDocuments = new Map<string, ScopedUpdateWorkingDocument>();
   const foundSpecs: string[] = [];
+  const safeActions: ScopedUpdateSafeAction[] = [];
+  const manualFindings: ScopedUpdateManualFinding[] = [];
+
   for (const path of configPaths) {
+    const canonicalPath = await realpath(path);
     const originalBytes = await readFile(path);
     const original = originalBytes.toString("utf8");
     const planned = updateConfig(original, path);
     foundSpecs.push(...planned.specs);
-    const changed = planned.updated !== original;
-    configSnapshots.push({
+    const roles = new Set<ScopedUpdateConfigRole>(["package-authority"]);
+    if (planned.replacements > 0) {
+      roles.add("package-edit");
+      safeActions.push({
+        kind: "package-spec",
+        path,
+        replacements: planned.replacements,
+      });
+    }
+    workingDocuments.set(canonicalPath, {
       path,
+      original,
       originalBytes,
-      expectedBytes: changed ? Buffer.from(planned.updated, "utf8") : originalBytes,
       updated: planned.updated,
+      replacements: planned.replacements,
+      displayMigrations: 0,
+      roles,
+    });
+  }
+
+  const migrationDiscovery = await discoverExistingScopedUpdateMigrationCandidates({
+    globalRoots: runtime.configDirs,
+    workspaceRoot: projectRoot,
+    selectedPackagePaths: configPaths,
+  });
+  manualFindings.push(...migrationDiscovery.manualFindings);
+
+  for (const candidate of migrationDiscovery.candidates) {
+    const existingDocument = workingDocuments.get(candidate.realPath);
+    if (existingDocument) {
+      existingDocument.roles.add("display-migration");
+      const inspection = inspectLegacyDisplayDocument({
+        path: existingDocument.path,
+        format: existingDocument.path.endsWith(".jsonc") ? "jsonc" : "json",
+        raw: existingDocument.updated,
+        container: candidate.container,
+      });
+      existingDocument.updated = inspection.updated;
+      existingDocument.displayMigrations += inspection.safeActions.length;
+      safeActions.push(...inspection.safeActions);
+      manualFindings.push(...inspection.manualFindings);
+      continue;
+    }
+
+    let originalBytes: Buffer;
+    try {
+      originalBytes = await readFile(candidate.path);
+    } catch {
+      throw new ScopedUpdateError(`Failed reading update migration config: ${candidate.path}`, {
+        path: candidate.path,
+      });
+    }
+    const original = originalBytes.toString("utf8");
+    const inspection = inspectLegacyDisplayDocument({
+      path: candidate.path,
+      format: candidate.format,
+      raw: original,
+      container: candidate.container,
+    });
+    safeActions.push(...inspection.safeActions);
+    manualFindings.push(...inspection.manualFindings);
+    if (
+      inspection.manualFindings.some((finding) => finding.kind === "migration-file-uninspectable")
+    ) {
+      continue;
+    }
+
+    workingDocuments.set(candidate.realPath, {
+      path: candidate.path,
+      original,
+      originalBytes,
+      updated: inspection.updated,
+      replacements: 0,
+      displayMigrations: inspection.safeActions.length,
+      roles: new Set(["display-migration"]),
+    });
+  }
+
+  manualFindings.push(
+    ...(await auditObsoleteUpdateSources({
+      env,
+      configDirs: runtime.configDirs,
+      primaryConfigDir: primaryRuntime.configDir,
+    })),
+  );
+
+  const configEdits: ScopedUpdateConfigEdit[] = [];
+  const configSnapshots: ScopedUpdateConfigSnapshot[] = [];
+  for (const document of workingDocuments.values()) {
+    const changed = document.updated !== document.original;
+    configSnapshots.push({
+      path: document.path,
+      originalBytes: document.originalBytes,
+      expectedBytes: changed ? Buffer.from(document.updated, "utf8") : document.originalBytes,
+      updated: document.updated,
       changed,
+      roles: CONFIG_ROLE_ORDER.filter((role) => document.roles.has(role)),
     });
     if (changed) {
       configEdits.push({
-        path,
-        original,
-        originalBytes,
-        updated: planned.updated,
-        replacements: planned.replacements,
+        path: document.path,
+        original: document.original,
+        originalBytes: document.originalBytes,
+        updated: document.updated,
+        replacements: document.replacements,
+        displayMigrations: document.displayMigrations,
       });
     }
   }
 
   const uniqueSpecs = [...new Set(foundSpecs)];
   const cacheSpecs = [...new Set([...uniqueSpecs, QUOTA_LATEST_SPEC])];
-  const runtime = getOpencodeRuntimeDirCandidates({
-    platform: params.platform,
-    env,
-    homeDir: params.homeDir,
-  });
   const cacheCandidates = runtime.cacheDirs.flatMap((cacheDir) =>
     cacheSpecs.map((spec) =>
       join(cacheDir, "packages", sanitizeOpenCodePackageSpec(spec, params.platform)),
@@ -223,6 +339,8 @@ export async function planScopedUpdate(
     foundSpecs: uniqueSpecs,
     cacheCandidates: [...new Set(cacheCandidates)],
     authoritativeLatest: uniqueSpecs.length > 0,
+    safeActions: sortScopedUpdateSafeActions(safeActions),
+    manualFindings: sortScopedUpdateManualFindings(manualFindings),
   };
 }
 
@@ -320,6 +438,7 @@ export async function applyScopedUpdatePlan(
     if (!current.equals(snapshot.expectedBytes)) {
       throw failure("Config changed before cache deletion:", snapshot.path);
     }
+    if (!snapshot.roles.includes("package-authority")) continue;
     const currentPlan = updateConfig(current.toString("utf8"), snapshot.path);
     if (currentPlan.specs.includes(QUOTA_LATEST_SPEC)) authoritativeLatest = true;
   }
