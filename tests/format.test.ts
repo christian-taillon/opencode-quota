@@ -420,6 +420,38 @@ describe("formatQuotaRows", () => {
     expect(out.split("\n").every((line) => line.length <= 50)).toBe(true);
   });
 
+  it("keeps an overwide structured quantity visible in classic output", () => {
+    const out = formatQuotaRows({
+      version: "1.0.0",
+      style: "singleWindow",
+      layout: { maxWidth: 24, narrowAt: 20, tinyAt: 16 },
+      entries: [
+        {
+          kind: "quantity",
+          name: "huge-balance",
+          accounting: {
+            resultType: "balance",
+            acquisitionMethod: "remote_api",
+            ownership: "maintained",
+            authority: "provider_reported",
+          },
+          semantic: {
+            metric: { kind: "component", component: "current_balance" },
+            prominence: "primary",
+          },
+          quantity: {
+            decimal: "123456789012345678901234567890.12",
+            unit: { kind: "currency", code: "USD" },
+          },
+        },
+      ],
+    });
+
+    expect(out).toContain("…");
+    expect(out).toContain("567,890.12");
+    expect(out.split("\n").every((line) => line.length <= 24)).toBe(true);
+  });
+
   it("keeps provider identity on structured classic value rows", () => {
     const out = formatQuotaRows({
       version: "1.0.0",
