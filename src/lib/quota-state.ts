@@ -238,18 +238,31 @@ export async function fetchQuotaProviderResult(params: {
 }): Promise<QuotaProviderResult> {
   const { provider, ctx, ttlMs, bypassCache = false } = params;
 
-  if (bypassCache) {
+  if (isLiveLocalUsageProviderId(provider.id)) {
     const snapshot = await fetchValidatedProviderResult(provider, ctx);
+    const key = buildQuotaProviderStateCacheKey(provider.id, ctx);
+    const entry = encodePersistedQuotaProviderCacheEntry({
+      packageVersion: await getQuotaProviderCachePackageVersion(),
+      key,
+      providerId: provider.id,
+      timestamp: Date.now(),
+      result: snapshot,
+    });
+    inMemoryCache.set(key, {
+      ...entry,
+      result: cloneQuotaProviderResult(entry.result),
+    });
     publishQuotaTelemetry({
       ctx,
       providerId: provider.id,
-      snapshotId: `uncached:${provider.id}`,
+      snapshotId: key,
       result: snapshot,
+      cacheTimestamp: entry.timestamp,
     });
     return snapshot;
   }
 
-  if (isLiveLocalUsageProviderId(provider.id)) {
+  if (bypassCache) {
     const snapshot = await fetchValidatedProviderResult(provider, ctx);
     publishQuotaTelemetry({
       ctx,

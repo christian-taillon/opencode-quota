@@ -66,6 +66,38 @@ describe("quota-state shared cache", () => {
     expect(singleWindowKey).toBe(allWindowsKey);
   });
 
+  it("keeps the latest live-local snapshot available to export cache reads", async () => {
+    const { __resetQuotaStateForTests, fetchQuotaProviderResult, readCachedProviderResult } =
+      await import("../src/lib/quota-state.js");
+    __resetQuotaStateForTests();
+    const provider = {
+      id: "cursor",
+      fetch: vi
+        .fn()
+        .mockResolvedValueOnce({
+          attempted: true,
+          entries: [{ accounting: TEST_ACCOUNTING, name: "Cursor", percentRemaining: 72 }],
+          errors: [],
+        })
+        .mockResolvedValueOnce({
+          attempted: true,
+          entries: [{ accounting: TEST_ACCOUNTING, name: "Cursor", percentRemaining: 64 }],
+          errors: [],
+        }),
+    } as any;
+    const ctx = createTestContext();
+
+    await fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
+    await fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000, bypassCache: true });
+    const cached = await readCachedProviderResult({ provider, ctx, ttlMs: 60_000 });
+
+    expect(provider.fetch).toHaveBeenCalledTimes(2);
+    expect(cached).toMatchObject({
+      hit: true,
+      result: { entries: [{ name: "Cursor", percentRemaining: 64 }] },
+    });
+  });
+
   it("uses identical cache identity for alias-normalized and canonical definitions", async () => {
     const { buildQuotaProviderStateCacheKey } = await import("../src/lib/quota-state.js");
     const base = {
