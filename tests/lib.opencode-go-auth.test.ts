@@ -157,18 +157,34 @@ describe("OpenCode Go auth resolution", () => {
     expect(authMocks.readAuthFileCached).not.toHaveBeenCalled();
   });
 
-  it("uses only trusted global provider.opencode.options.apiKey", async () => {
+  it("uses canonical trusted global provider.opencode-go.options.apiKey first", async () => {
     mockTrustedConfigFile(
       fsMocks,
       trustedPaths.jsonc,
-      JSON.stringify({ provider: { opencode: { options: { apiKey: "config-key" } } } }),
+      JSON.stringify({
+        provider: {
+          "opencode-go": { options: { apiKey: "canonical-key" } },
+          opencode: { options: { apiKey: "legacy-key" } },
+        },
+      }),
     );
 
     await expect(resolveOpenCodeGoAuthCached()).resolves.toEqual({
       state: "configured",
-      apiKey: "config-key",
+      apiKey: "canonical-key",
     });
     expect(authMocks.readAuthFileCached).not.toHaveBeenCalled();
+
+    resetFixture();
+    mockTrustedConfigFile(
+      fsMocks,
+      trustedPaths.json,
+      JSON.stringify({ provider: { opencode: { options: { apiKey: "legacy-key" } } } }),
+    );
+    await expect(resolveOpenCodeGoAuthCached()).resolves.toEqual({
+      state: "configured",
+      apiKey: "legacy-key",
+    });
 
     resetFixture();
     mockExistingConfigPath(fsMocks, workspacePaths.json);

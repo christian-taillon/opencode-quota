@@ -10,7 +10,7 @@ export const DEFAULT_OPENCODE_GO_AUTH_CACHE_MAX_AGE_MS = 5_000;
 // `opencode auth login -p opencode-go` (shown as "OpenCode Go api" in `opencode auth list`).
 // `opencode` stays as a fallback alias for existing manual setups.
 const OPENCODE_GO_AUTH_KEYS = ["opencode-go", "opencode"] as const;
-const OPENCODE_GO_PROVIDER_KEYS = ["opencode"] as const;
+const OPENCODE_GO_PROVIDER_KEYS = ["opencode-go", "opencode"] as const;
 const ALLOWED_OPENCODE_GO_ENV_VARS = ["OPENCODE_API_KEY"] as const;
 
 export type OpenCodeGoKeySource =
