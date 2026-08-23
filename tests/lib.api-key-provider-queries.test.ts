@@ -582,6 +582,38 @@ describe("simple API-key provider queries", () => {
         success: false,
         error:
           "Usage: NanoGPT API error 500: usage failed; Balance: NanoGPT API error 403: balance failed",
+        retryable: true,
+      });
+    });
+
+    it("preserves non-retryable HTTP status when error bodies cannot be read", async () => {
+      useNanoGptApiKey();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => ({
+          ok: false,
+          status: 403,
+          text: vi.fn().mockRejectedValue(new Error("body unavailable")),
+        })),
+      );
+
+      await expect(queryNanoGptQuota()).resolves.toMatchObject({
+        success: false,
+        error: expect.stringContaining("NanoGPT API error 403: body unavailable"),
+        retryable: false,
+      });
+    });
+
+    it("marks a combined transient endpoint failure as retryable", async () => {
+      useNanoGptApiKey();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response("temporarily unavailable", { status: 503 })),
+      );
+
+      await expect(queryNanoGptQuota()).resolves.toMatchObject({
+        success: false,
+        retryable: true,
       });
     });
 
@@ -617,6 +649,7 @@ describe("simple API-key provider queries", () => {
       await expect(queryNanoGptQuota()).resolves.toEqual({
         success: false,
         error: "Usage: network down; Balance: network down",
+        retryable: true,
       });
     });
   });

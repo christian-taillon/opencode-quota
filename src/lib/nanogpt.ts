@@ -90,6 +90,10 @@ const USER_AGENT = "OpenCode-Quota-Toast/1.0";
 const NANOGPT_USAGE_URL = "https://nano-gpt.com/api/subscription/v1/usage";
 const NANOGPT_BALANCE_URL = "https://nano-gpt.com/api/check-balance";
 
+function isRetryableHttpStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
 function isRecord(value: unknown): value is NanoGptRecord {
   return Boolean(value) && typeof value === "object";
 }
@@ -234,7 +238,8 @@ async function fetchNanoGptUsage(
   headers: Record<string, string>,
   requestTimeoutMs?: number,
 ): Promise<
-  { success: true; subscription: NanoGptSubscription } | { success: false; message: string }
+  | { success: true; subscription: NanoGptSubscription }
+  | { success: false; message: string; retryable: boolean }
 > {
   try {
     return await fetchWithTimeout(NANOGPT_USAGE_URL, {
@@ -245,10 +250,16 @@ async function fetchNanoGptUsage(
       timeoutMs: requestTimeoutMs,
       consume: async (response) => {
         if (!response.ok) {
-          const text = await response.text();
+          let text: string;
+          try {
+            text = await response.text();
+          } catch (error) {
+            text = sanitizeDisplayText(error instanceof Error ? error.message : String(error));
+          }
           return {
             success: false as const,
             message: `NanoGPT API error ${response.status}: ${sanitizeDisplaySnippet(text, 120)}`,
+            retryable: isRetryableHttpStatus(response.status),
           };
         }
 
@@ -262,6 +273,7 @@ async function fetchNanoGptUsage(
     return {
       success: false,
       message: sanitizeDisplayText(err instanceof Error ? err.message : String(err)),
+      retryable: true,
     };
   }
 }
@@ -271,7 +283,7 @@ async function fetchNanoGptBalance(
   requestTimeoutMs?: number,
 ): Promise<
   | { success: true; balance: NanoGptBalance; fieldErrors: string[] }
-  | { success: false; message: string }
+  | { success: false; message: string; retryable: boolean }
 > {
   try {
     return await fetchWithTimeout(NANOGPT_BALANCE_URL, {
@@ -282,10 +294,16 @@ async function fetchNanoGptBalance(
       timeoutMs: requestTimeoutMs,
       consume: async (response) => {
         if (!response.ok) {
-          const text = await response.text();
+          let text: string;
+          try {
+            text = await response.text();
+          } catch (error) {
+            text = sanitizeDisplayText(error instanceof Error ? error.message : String(error));
+          }
           return {
             success: false as const,
             message: `NanoGPT API error ${response.status}: ${sanitizeDisplaySnippet(text, 120)}`,
+            retryable: isRetryableHttpStatus(response.status),
           };
         }
 
@@ -299,6 +317,7 @@ async function fetchNanoGptBalance(
     return {
       success: false,
       message: sanitizeDisplayText(err instanceof Error ? err.message : String(err)),
+      retryable: true,
     };
   }
 }
@@ -341,6 +360,7 @@ export async function queryNanoGptQuota(
       error: endpointErrors
         .map((entry) => `${entry.endpoint === "usage" ? "Usage" : "Balance"}: ${entry.message}`)
         .join("; "),
+      retryable: usageResult.retryable || balanceResult.retryable,
     };
   }
 

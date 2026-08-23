@@ -803,6 +803,8 @@ export interface GoogleQuotaResult {
 export interface QuotaError {
   success: false;
   error: string;
+  /** Whether retrying later may succeed without changing credentials or configuration. */
+  retryable?: boolean;
 }
 
 /** Combined quota result */
