@@ -43,7 +43,7 @@ describe("opencode-runtime-paths", () => {
       },
       homeDir: "/home/test",
     });
-    expect(relative.configDir).toBe(join("/x/config", "opencode", "work-profile"));
+    expect(relative.configDir).toBe(resolve(join("/x/config", "opencode"), "work-profile"));
 
     const candidates = getOpencodeRuntimeDirCandidates({
       platform: "linux",
