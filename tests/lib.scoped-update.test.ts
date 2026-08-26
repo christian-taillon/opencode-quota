@@ -1008,9 +1008,9 @@ describe("scoped update application safety", () => {
     expect(readFileSync(config, "utf8")).toContain("provider-secret-canary");
   });
 
-  it("sanitizes preview, failure, and final-result paths to one line", async () => {
+  it("sanitizes display paths without creating invalid filesystem names", async () => {
     const root = tempDir();
-    const project = join(root, "project\n\u001b[31munsafe");
+    const project = join(root, "project");
     mkdirSync(join(project, ".git"), { recursive: true });
     const config = join(project, "opencode.json");
     write(config, `{"plugin":["@slkiser/opencode-quota@3.11.1"]}`);
@@ -1032,14 +1032,37 @@ describe("scoped update application safety", () => {
     for (const message of log.mock.calls.flat()) {
       expect(hasControlCharacter(message)).toBe(false);
     }
-    expect(log.mock.calls.flat().join("\n")).toContain("project unsafe");
 
     write(config, `{"plugin":["@slkiser/opencode-quota@3.11.1"]}`);
     const plan = await planScopedUpdate(params);
-    write(config, `{"plugin":["other-plugin"]}`);
-    const error = await applyScopedUpdatePlan(plan).catch((caught: unknown) => caught);
+    const unsafePath = `${config}\n\u001b[31munsafe`;
+    const unsafePlan = {
+      ...plan,
+      configPaths: plan.configPaths.map((path) => (path === config ? unsafePath : path)),
+      configEdits: plan.configEdits.map((edit) =>
+        edit.path === config ? { ...edit, path: unsafePath } : edit,
+      ),
+      configSnapshots: plan.configSnapshots.map((snapshot) =>
+        snapshot.path === config ? { ...snapshot, path: unsafePath } : snapshot,
+      ),
+      safeActions: plan.safeActions.map((action) =>
+        action.path === config ? { ...action, path: unsafePath } : action,
+      ),
+    };
+
+    const previewLines = formatScopedUpdatePreview(unsafePlan);
+    for (const line of previewLines) {
+      expect(hasControlCharacter(line)).toBe(false);
+    }
+    expect(previewLines.join("\n")).toContain("opencode.json unsafe");
+
+    const error = await applyScopedUpdatePlan(unsafePlan, {
+      readBytes: async () => {
+        throw new Error("simulated read failure");
+      },
+    }).catch((caught: unknown) => caught);
     expect(hasControlCharacter(String(error))).toBe(false);
-    expect(String(error)).toContain("project unsafe");
+    expect(String(error)).toContain("opencode.json unsafe");
   });
 
   it("keeps accepted update flags and two-code exits unchanged", async () => {

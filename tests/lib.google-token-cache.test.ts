@@ -1,4 +1,19 @@
+import { dirname } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const testPaths = vi.hoisted(() => {
+  const separator = process.platform === "win32" ? "\\" : "/";
+  const join = (...parts: string[]) => parts.join(separator);
+  const root = join(process.cwd(), ".google-token-cache-test");
+  const cacheDir = join(root, "cache", "opencode");
+  return {
+    dataDir: join(root, "data", "opencode"),
+    configDir: join(root, "config", "opencode"),
+    cacheDir,
+    stateDir: join(root, "state", "opencode"),
+    cachePath: join(cacheDir, "opencode-quota", "google-access-tokens.json"),
+  };
+});
 
 vi.mock("fs/promises", () => ({
   mkdir: vi.fn(async () => undefined),
@@ -12,14 +27,14 @@ vi.mock("fs/promises", () => ({
 
 vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
   getOpencodeRuntimeDirs: () => ({
-    dataDir: "/tmp/data/opencode",
-    configDir: "/tmp/config/opencode",
-    cacheDir: "/tmp/cache/opencode",
-    stateDir: "/tmp/state/opencode",
+    dataDir: testPaths.dataDir,
+    configDir: testPaths.configDir,
+    cacheDir: testPaths.cacheDir,
+    stateDir: testPaths.stateDir,
   }),
 }));
 
-const CACHE_PATH = "/tmp/cache/opencode/opencode-quota/google-access-tokens.json";
+const CACHE_PATH = testPaths.cachePath;
 
 function entry(accessToken: string) {
   return {
@@ -42,7 +57,7 @@ describe("google-token-cache", () => {
 
     await setCachedAccessToken({ key: "account-key", entry: entry("access-token") });
 
-    expect(mkdir).toHaveBeenCalledWith("/tmp/cache/opencode/opencode-quota", {
+    expect(mkdir).toHaveBeenCalledWith(dirname(CACHE_PATH), {
       recursive: true,
       mode: 0o700,
     });

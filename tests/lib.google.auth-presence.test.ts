@@ -8,6 +8,22 @@ const fsMocks = vi.hoisted(() => ({
   existsSync: vi.fn(),
 }));
 
+const testPaths = vi.hoisted(() => {
+  const separator = process.platform === "win32" ? "\\" : "/";
+  const join = (...parts: string[]) => parts.join(separator);
+  const root = join(process.cwd(), ".google-auth-presence-test");
+  const configDir = join(root, "config", "opencode");
+  const dataDir = join(root, "data", "opencode");
+  return {
+    configDir,
+    dataDir,
+    cacheDir: join(root, "cache", "opencode"),
+    stateDir: join(root, "state", "opencode"),
+    configPath: join(configDir, "antigravity-accounts.json"),
+    dataPath: join(dataDir, "antigravity-accounts.json"),
+  };
+});
+
 vi.mock("fs/promises", () => ({
   readFile: promiseMocks.readFile,
 }));
@@ -18,10 +34,10 @@ vi.mock("fs", () => ({
 
 vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
   getOpencodeRuntimeDirCandidates: () => ({
-    dataDirs: ["/home/test/.local/share/opencode"],
-    configDirs: ["/home/test/.config/opencode"],
-    cacheDirs: ["/home/test/.cache/opencode"],
-    stateDirs: ["/home/test/.local/state/opencode"],
+    dataDirs: [testPaths.dataDir],
+    configDirs: [testPaths.configDir],
+    cacheDirs: [testPaths.cacheDir],
+    stateDirs: [testPaths.stateDir],
   }),
 }));
 
@@ -31,8 +47,8 @@ import {
   readAntigravityAccounts,
 } from "../src/lib/google.js";
 
-const CONFIG_PATH = "/home/test/.config/opencode/antigravity-accounts.json";
-const DATA_PATH = "/home/test/.local/share/opencode/antigravity-accounts.json";
+const CONFIG_PATH = testPaths.configPath;
+const DATA_PATH = testPaths.dataPath;
 
 describe("google antigravity auth presence", () => {
   beforeEach(() => {
