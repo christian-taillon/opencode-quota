@@ -1,4 +1,21 @@
+import { join } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const testPaths = vi.hoisted(() => {
+  const separator = process.platform === "win32" ? "\\" : "/";
+  const homeDir =
+    process.platform === "win32"
+      ? ["C:", "Users", "test"].join(separator)
+      : ["", "home", "test"].join(separator);
+  const withinHome = (...parts: string[]) => [homeDir, ...parts].join(separator);
+  return {
+    dataDir: withinHome(".local", "share", "opencode"),
+    configDir: withinHome(".config", "opencode"),
+    cacheDir: withinHome(".cache", "opencode"),
+    stateDir: withinHome(".local", "state", "opencode"),
+  };
+});
 
 const fsMocks = vi.hoisted(() => ({
   existsSync: vi.fn(() => false),
@@ -20,10 +37,10 @@ vi.mock("fs", async (importOriginal) => {
 
 vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
   getOpencodeRuntimeDirCandidates: () => ({
-    dataDirs: ["/home/test/.local/share/opencode"],
-    configDirs: ["/home/test/.config/opencode"],
-    cacheDirs: ["/home/test/.cache/opencode"],
-    stateDirs: ["/home/test/.local/state/opencode"],
+    dataDirs: [testPaths.dataDir],
+    configDirs: [testPaths.configDir],
+    cacheDirs: [testPaths.cacheDir],
+    stateDirs: [testPaths.stateDir],
   }),
 }));
 
@@ -31,7 +48,7 @@ vi.mock("../src/lib/opencode-auth.js", () => ({
   readAuthFile: authMocks.readAuthFile,
 }));
 
-const patPath = "/home/test/.config/opencode/copilot-quota-token.json";
+const patPath = join(testPaths.configDir, "copilot-quota-token.json");
 
 function configure(value: Record<string, unknown>): void {
   fsMocks.existsSync.mockImplementation((path) => path === patPath);
