@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -26,14 +26,15 @@ describe("opencode-runtime-paths", () => {
   });
 
   it("uses OPENCODE_CONFIG_DIR as the primary global config directory", () => {
+    const absoluteConfigDir = resolve("custom", "opencode");
     const absolute = getOpencodeRuntimeDirs({
       env: {
         XDG_CONFIG_HOME: "/x/config",
-        OPENCODE_CONFIG_DIR: "/custom/opencode",
+        OPENCODE_CONFIG_DIR: absoluteConfigDir,
       },
       homeDir: "/home/test",
     });
-    expect(absolute.configDir).toBe(join("/custom", "opencode"));
+    expect(absolute.configDir).toBe(absoluteConfigDir);
 
     const relative = getOpencodeRuntimeDirs({
       env: {
@@ -48,11 +49,11 @@ describe("opencode-runtime-paths", () => {
       platform: "linux",
       env: {
         XDG_CONFIG_HOME: "/x/config",
-        OPENCODE_CONFIG_DIR: "/custom/opencode",
+        OPENCODE_CONFIG_DIR: absoluteConfigDir,
       },
       homeDir: "/home/test",
     });
-    expect(candidates.configDirs[0]).toBe(join("/custom", "opencode"));
+    expect(candidates.configDirs[0]).toBe(absoluteConfigDir);
   });
 
   it("includes Windows APPDATA/LOCALAPPDATA fallbacks after primary", () => {

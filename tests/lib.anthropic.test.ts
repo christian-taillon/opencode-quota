@@ -8,6 +8,7 @@ const authMocks = vi.hoisted(() => ({
   readAuthFileCached: vi.fn(),
 }));
 
+import { join } from "node:path";
 import { execFile } from "child_process";
 import { readFile } from "fs/promises";
 import {
@@ -897,7 +898,7 @@ describe("Claude CLI diagnostics", () => {
     expect(diagnostics.message).toContain(
       "Claude CLI auth detected, but quota was unavailable from the local CLI and OAuth credential sources.",
     );
-    expect(diagnostics.message).toContain(".claude/.credentials.json");
+    expect(diagnostics.message).toContain(join(".claude", ".credentials.json"));
 
     const quota = await queryAnthropicQuota();
     expect(quota?.success).toBe(false);
@@ -905,7 +906,7 @@ describe("Claude CLI diagnostics", () => {
       expect(quota.error).toContain(
         "Claude CLI auth detected, but quota was unavailable from the local CLI and OAuth credential sources.",
       );
-      expect(quota.error).toContain(".claude/.credentials.json");
+      expect(quota.error).toContain(join(".claude", ".credentials.json"));
     }
     expect(fetchWithTimeoutMock).not.toHaveBeenCalled();
     expect(readFileMock).toHaveBeenCalledTimes(1);
@@ -934,13 +935,13 @@ describe("Claude CLI diagnostics", () => {
     const diagnostics = await getAnthropicDiagnostics();
     expect(diagnostics.quotaSupported).toBe(false);
     expect(diagnostics.message).toContain("Claude Code-credentials");
-    expect(diagnostics.message).toContain(".claude/.credentials.json");
+    expect(diagnostics.message).toContain(join(".claude", ".credentials.json"));
 
     const quota = await queryAnthropicQuota();
     expect(quota?.success).toBe(false);
     if (quota && !quota.success) {
       expect(quota.error).toContain("Claude Code-credentials");
-      expect(quota.error).toContain(".claude/.credentials.json");
+      expect(quota.error).toContain(join(".claude", ".credentials.json"));
     }
     expect(fetchWithTimeoutMock).not.toHaveBeenCalled();
     expect(readFileMock).toHaveBeenCalledTimes(1);
@@ -1394,7 +1395,7 @@ describe("Claude CLI diagnostics", () => {
     expect(diagnostics.message).toContain(
       "Claude CLI auth detected, but quota was unavailable from the local CLI and OAuth credential sources.",
     );
-    expect(diagnostics.message).toContain(".claude/.credentials.json");
+    expect(diagnostics.message).toContain(join(".claude", ".credentials.json"));
     await expect(hasAnthropicCredentialsConfigured()).resolves.toBe(true);
 
     const quota = await queryAnthropicQuota();
@@ -1403,7 +1404,7 @@ describe("Claude CLI diagnostics", () => {
       expect(quota.error).toContain(
         "Claude CLI auth detected, but quota was unavailable from the local CLI and OAuth credential sources.",
       );
-      expect(quota.error).toContain(".claude/.credentials.json");
+      expect(quota.error).toContain(join(".claude", ".credentials.json"));
     }
   });
 

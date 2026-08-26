@@ -1008,9 +1008,10 @@ describe("scoped update application safety", () => {
     expect(readFileSync(config, "utf8")).toContain("provider-secret-canary");
   });
 
-  it("sanitizes display paths without creating invalid filesystem names", async () => {
+  it("sanitizes preview, failure, and final-result paths without Windows-invalid names", async () => {
     const root = tempDir();
-    const project = join(root, "project");
+    // Windows permits C1 controls in filenames; the display sanitizer still removes them.
+    const project = join(root, "project \u0085unsafe");
     mkdirSync(join(project, ".git"), { recursive: true });
     const config = join(project, "opencode.json");
     write(config, `{"plugin":["@slkiser/opencode-quota@3.11.1"]}`);
@@ -1032,6 +1033,7 @@ describe("scoped update application safety", () => {
     for (const message of log.mock.calls.flat()) {
       expect(hasControlCharacter(message)).toBe(false);
     }
+    expect(log.mock.calls.flat().join("\n")).toContain("project unsafe");
 
     write(config, `{"plugin":["@slkiser/opencode-quota@3.11.1"]}`);
     const plan = await planScopedUpdate(params);
