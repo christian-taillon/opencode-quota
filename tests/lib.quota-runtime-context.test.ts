@@ -266,6 +266,26 @@ describe("quota runtime context", () => {
     expect(providerContext.config?.requestTimeoutMsConfigured).toBe(false);
   });
 
+  it("threads the optional native connection boundary without serializing credentials", () => {
+    const client = createClient();
+    const nativeConnections = {
+      list: vi.fn(),
+      resolve: vi.fn(),
+    };
+
+    const providerContext = createQuotaProviderRuntimeContext({
+      client,
+      nativeConnections,
+      resolveRuntimeProviderIds: createRuntimeProviderIdResolver(client),
+      config: DEFAULT_CONFIG,
+      session: {},
+    });
+
+    expect(providerContext.nativeConnections).toBe(nativeConnections);
+    expect(JSON.stringify(providerContext)).not.toContain("access");
+    expect(JSON.stringify(providerContext)).not.toContain("refresh");
+  });
+
   it("resolves session meta only when the shared config requests it", async () => {
     writeFileSync(
       join(nestedDir, "opencode.json"),

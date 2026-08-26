@@ -10,6 +10,7 @@ import type {
   SessionTokensData,
 } from "./entries.js";
 import { cloneQuotaToastEntry } from "./entries.js";
+import type { NativeConnectionAccess } from "./opencode-v2-connections.js";
 import {
   getQuotaProviderDisplayLabel,
   getQuotaProviderIdsForRuntimeId,
@@ -177,6 +178,7 @@ function hasCurrentQuotaSelection(params: {
 
 export async function resolveQuotaRenderSelection(params: {
   client: QuotaProviderContext["client"];
+  nativeConnections?: NativeConnectionAccess;
   config: QuotaToastConfig;
   request?: QuotaRequestContext;
   configMeta?: Pick<LoadConfigMeta, "settingSources">;
@@ -193,6 +195,7 @@ export async function resolveQuotaRenderSelection(params: {
 
   const ctx = createQuotaProviderRuntimeContext({
     client,
+    nativeConnections: params.nativeConnections,
     config,
     configMeta: params.configMeta,
     resolveRuntimeProviderIds:
@@ -302,6 +305,7 @@ export async function fetchProviderResults(params: {
 
 export async function collectQuotaStatusLiveProbes(params: {
   client: QuotaProviderContext["client"];
+  nativeConnections?: NativeConnectionAccess;
   config: QuotaToastConfig;
   request?: QuotaRequestContext;
   configMeta?: Pick<LoadConfigMeta, "settingSources">;
@@ -321,6 +325,7 @@ export async function collectQuotaStatusLiveProbes(params: {
 
   const ctx = createQuotaProviderRuntimeContext({
     client: params.client,
+    nativeConnections: params.nativeConnections,
     config: params.config,
     configMeta: params.configMeta,
     resolveRuntimeProviderIds:
@@ -457,6 +462,7 @@ function packageQuotaRenderData(params: {
 
 export async function collectQuotaRenderData(params: {
   client: QuotaProviderContext["client"];
+  nativeConnections?: NativeConnectionAccess;
   config: QuotaToastConfig;
   request?: QuotaRequestContext;
   surfaceExplicitProviderIssues: boolean;

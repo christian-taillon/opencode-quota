@@ -7,6 +7,11 @@ import { createSignal, onCleanup, Show } from "solid-js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
 import { formatQuotaRows } from "./lib/format.js";
 import {
+  createNativeConnectionAccessFromPluginContext,
+  createRegisteredNativeConnectionAccess,
+  isNativeConnectionResolverContext,
+} from "./lib/opencode-v2-connections.js";
+import {
   buildQuotaDialogCommandOutput,
   QUOTA_DIALOG_COMMANDS,
   type QuotaDialogCommandId,
@@ -29,8 +34,9 @@ type Toast = {
   message: string;
   duration?: number;
 };
-type TuiContext = {
+export type TuiContext = {
   client: unknown;
+  integration?: unknown;
   data: { on: (event: string, handler: (event: TuiEvent) => void) => () => void };
   keymap: {
     layer: (
@@ -62,6 +68,19 @@ type TuiContext = {
   };
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function isTuiContext(value: unknown): value is TuiContext {
+  if (!isRecord(value)) return false;
+  if (!isRecord(value.data) || typeof value.data.on !== "function") return false;
+  if (!isRecord(value.keymap) || typeof value.keymap.layer !== "function") return false;
+  if (!isRecord(value.ui) || typeof value.ui.slot !== "function") return false;
+  if (!isRecord(value.ui.toast) || typeof value.ui.toast.show !== "function") return false;
+  return isRecord(value.ui.dialog) && typeof value.ui.dialog.alert === "function";
+}
+
 function getSessionID(event: TuiEvent): string | undefined {
   const sessionID = event.data?.sessionID;
   return typeof sessionID === "string" && sessionID ? sessionID : undefined;
@@ -87,6 +106,7 @@ async function getQuotaMessage(
 ): Promise<{ message: string; duration: number; activeProviderCount: number } | undefined> {
   const runtime = await resolveQuotaRuntimeContext({
     client: context.client as never,
+    nativeConnections: getNativeConnectionAccess(context),
     roots: { fallbackDirectory: process.cwd() },
     sessionID,
     resolveSessionMeta: (id) => getSessionModelMeta(context.client, id),
@@ -110,6 +130,7 @@ async function getQuotaMessage(
   const formatStyle = resolveQuotaFormatStyle(config.formatStyle);
   const result = await collectQuotaRenderData({
     client: runtime.client,
+    nativeConnections: runtime.nativeConnections,
     resolveRuntimeProviderIds: runtime.resolveRuntimeProviderIds,
     config,
     configMeta: runtime.configMeta,
@@ -192,6 +213,7 @@ async function runQuotaCommand(
       command,
       arguments: argumentsText,
       client: context.client as never,
+      nativeConnections: getNativeConnectionAccess(context),
       roots: { fallbackDirectory: process.cwd() },
       sessionID,
       resolveSessionMeta: (id) => getSessionModelMeta(context.client, id),
@@ -207,6 +229,13 @@ async function runQuotaCommand(
       message: sanitizeDisplayText(error instanceof Error ? error.message : String(error)),
     });
   }
+}
+
+function getNativeConnectionAccess(context: TuiContext) {
+  if (isNativeConnectionResolverContext(context)) {
+    return createNativeConnectionAccessFromPluginContext(context.client, context);
+  }
+  return createRegisteredNativeConnectionAccess(context.client);
 }
 
 function registerQuotaCommands(context: TuiContext, getSessionID: () => string | undefined): void {

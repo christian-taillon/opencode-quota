@@ -24,6 +24,7 @@ import {
   setPricingSnapshotAutoRefresh,
   setPricingSnapshotSelection,
 } from "./modelsdev-pricing.js";
+import type { NativeConnectionAccess } from "./opencode-v2-connections.js";
 import { formatQuotaCommand } from "./quota-command-format.js";
 import { ALL_WINDOWS_FORMAT_STYLE } from "./quota-format-style.js";
 import {
@@ -329,6 +330,7 @@ async function fetchQuotaCommandData(params: {
   const request = createQuotaRuntimeRequestContext(runtime);
   const quotaResult = await collectQuotaRenderData({
     client: runtime.client,
+    nativeConnections: runtime.nativeConnections,
     resolveRuntimeProviderIds: runtime.resolveRuntimeProviderIds,
     config: runtime.config,
     configMeta: runtime.configMeta,
@@ -547,6 +549,7 @@ export async function buildStatusReportData(params: {
     try {
       providerLiveProbes = await collectQuotaStatusLiveProbes({
         client: params.runtime.client,
+        nativeConnections: params.runtime.nativeConnections,
         resolveRuntimeProviderIds: params.runtime.resolveRuntimeProviderIds,
         config: runtimeConfig,
         configMeta: params.runtime.configMeta,
@@ -895,6 +898,7 @@ export async function buildQuotaDialogCommandOutput(params: {
   command: QuotaDialogCommandId;
   arguments?: string;
   client: QuotaRuntimeClient;
+  nativeConnections?: NativeConnectionAccess;
   roots: RuntimeContextRootHints;
   sessionID?: string;
   sessionMeta?: SessionModelMeta;
@@ -908,6 +912,7 @@ export async function buildQuotaDialogCommandOutput(params: {
   const generatedAtMs = params.generatedAtMs ?? Date.now();
   const runtime = await resolveQuotaRuntimeContext({
     client: params.client,
+    nativeConnections: params.nativeConnections,
     roots: params.roots,
     sessionID: params.sessionID,
     sessionMeta: params.sessionMeta,

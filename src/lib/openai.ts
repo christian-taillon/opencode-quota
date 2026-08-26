@@ -37,6 +37,7 @@ interface JwtPayload {
   };
   "https://api.openai.com/auth"?: {
     chatgpt_account_id?: string;
+    chatgpt_account_user_id?: string;
   };
 }
 
@@ -63,6 +64,10 @@ function getEmailFromJwt(token: string): string | null {
 
 function getAccountIdFromJwt(token: string): string | null {
   return parseJwt(token)?.["https://api.openai.com/auth"]?.chatgpt_account_id ?? null;
+}
+
+function getAccountUserIdFromJwt(token: string): string | null {
+  return parseJwt(token)?.["https://api.openai.com/auth"]?.chatgpt_account_user_id ?? null;
 }
 
 type OpenAIWindowKind = "hourly" | "weekly" | "monthly";
@@ -147,17 +152,22 @@ function parseRateLimitWindow(
 }
 
 function derivePlanLabel(planType: string | undefined): string {
-  const normalized = (planType ?? "").trim().toLowerCase();
+  const displayPlanType = planType?.replace(/\s+\(role:[^)]+\)/giu, "").trim();
+  const normalized = (displayPlanType ?? "").toLowerCase();
   if (normalized === "team" || normalized === "business") return "OpenAI (Business)";
   if (normalized.includes("pro")) return "OpenAI (Pro)";
   if (normalized.includes("plus")) return "OpenAI (Plus)";
-  if (planType) return `OpenAI (${planType})`;
+  if (displayPlanType) return `OpenAI (${displayPlanType})`;
   return "OpenAI";
 }
 
 const OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 export const DEFAULT_OPENAI_AUTH_CACHE_MAX_AGE_MS = 5_000;
 export const OPENAI_AUTH_SOURCE_KEYS = ["openai", "codex", "chatgpt", "opencode"] as const;
+
+function sanitizeCredentialError(error: string, accessToken: string): string {
+  return sanitizeDisplayText(error).replaceAll(accessToken, "[redacted]");
+}
 
 export type OpenAIAuthSourceKey = (typeof OPENAI_AUTH_SOURCE_KEYS)[number];
 
@@ -181,6 +191,14 @@ export type OpenAIResult =
   | QuotaError
   | null;
 
+export type OpenAIQuotaCredential = {
+  accessToken: string;
+  accountId?: string;
+  accountUserId?: string;
+  expiresAt?: number;
+  email?: string;
+};
+
 export type ResolvedOpenAIOAuth =
   | { state: "none" }
   | {
@@ -191,6 +209,7 @@ export type ResolvedOpenAIOAuth =
       expiresAt?: number;
       email?: string;
       accountId?: string;
+      accountUserId?: string;
     };
 
 function getOpenAIOAuthEntry(
@@ -220,6 +239,7 @@ export function resolveOpenAIOAuth(auth: AuthData | null | undefined): ResolvedO
   const email = getEmailFromJwt(resolved.accessToken) ?? undefined;
   const accountId =
     getAccountIdFromJwt(resolved.accessToken) ?? resolved.entry.accountId ?? undefined;
+  const accountUserId = getAccountUserIdFromJwt(resolved.accessToken) ?? undefined;
 
   return {
     state: "configured",
@@ -232,6 +252,7 @@ export function resolveOpenAIOAuth(auth: AuthData | null | undefined): ResolvedO
     expiresAt: typeof resolved.entry.expires === "number" ? resolved.entry.expires : undefined,
     email,
     accountId,
+    accountUserId,
   };
 }
 
@@ -246,26 +267,26 @@ export async function hasOpenAIOAuthCached(params?: { maxAgeMs?: number }): Prom
   return hasOpenAIOAuth(auth);
 }
 
-export async function queryOpenAIQuota(
+export async function queryOpenAIQuotaForCredential(
+  credential: OpenAIQuotaCredential,
   options: { requestTimeoutMs?: number } = {},
-): Promise<OpenAIResult> {
-  const auth = await readAuthFileCached({
-    maxAgeMs: DEFAULT_OPENAI_AUTH_CACHE_MAX_AGE_MS,
-  });
-  const resolvedAuth = resolveOpenAIOAuth(auth);
-  if (resolvedAuth.state !== "configured") return null;
+): Promise<Exclude<OpenAIResult, null>> {
+  const accessToken = credential.accessToken.trim();
+  if (!accessToken) {
+    return { success: false, error: "Missing access token" };
+  }
 
-  if (resolvedAuth.expiresAt && resolvedAuth.expiresAt < Date.now()) {
+  if (credential.expiresAt !== undefined && credential.expiresAt <= Date.now()) {
     return { success: false, error: "Token expired" };
   }
 
   try {
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${resolvedAuth.accessToken}`,
+      Authorization: `Bearer ${accessToken}`,
       "User-Agent": "OpenCode-Quota-Toast/1.0",
     };
 
-    const accountId = resolvedAuth.accountId;
+    const accountId = credential.accountId ?? getAccountIdFromJwt(accessToken) ?? undefined;
     if (accountId) {
       headers["ChatGPT-Account-Id"] = accountId;
     }
@@ -278,7 +299,7 @@ export async function queryOpenAIQuota(
           const text = await resp.text();
           return {
             success: false,
-            error: `OpenAI API error ${resp.status}: ${sanitizeDisplaySnippet(text, 120)}`,
+            error: `OpenAI API error ${resp.status}: ${sanitizeCredentialError(sanitizeDisplaySnippet(text, 120), accessToken)}`,
           };
         }
 
@@ -320,7 +341,7 @@ export async function queryOpenAIQuota(
         return {
           success: true,
           label: derivePlanLabel(data.plan_type),
-          email: resolvedAuth.email,
+          email: credential.email ?? getEmailFromJwt(accessToken) ?? undefined,
           windows,
           credits: credits
             ? {
@@ -335,7 +356,28 @@ export async function queryOpenAIQuota(
   } catch (err) {
     return {
       success: false,
-      error: sanitizeDisplayText(err instanceof Error ? err.message : String(err)),
+      error: sanitizeCredentialError(err instanceof Error ? err.message : String(err), accessToken),
     };
   }
+}
+
+export async function queryOpenAIQuota(
+  options: { requestTimeoutMs?: number } = {},
+): Promise<OpenAIResult> {
+  const auth = await readAuthFileCached({
+    maxAgeMs: DEFAULT_OPENAI_AUTH_CACHE_MAX_AGE_MS,
+  });
+  const resolvedAuth = resolveOpenAIOAuth(auth);
+  if (resolvedAuth.state !== "configured") return null;
+
+  return queryOpenAIQuotaForCredential(
+    {
+      accessToken: resolvedAuth.accessToken,
+      accountId: resolvedAuth.accountId,
+      accountUserId: resolvedAuth.accountUserId,
+      expiresAt: resolvedAuth.expiresAt,
+      email: resolvedAuth.email,
+    },
+    options,
+  );
 }

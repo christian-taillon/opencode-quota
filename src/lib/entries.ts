@@ -1,3 +1,4 @@
+import type { NativeConnectionAccess } from "./opencode-v2-connections.js";
 import type { QuotaProviderDefinition } from "./quota-providers.js";
 import type { QuotaTelemetryToken } from "./quota-telemetry.js";
 import type { RuntimeProviderIdResolver } from "./runtime-provider-ids.js";
@@ -344,6 +345,8 @@ export interface QuotaProviderContext {
     };
   };
   resolveRuntimeProviderIds: RuntimeProviderIdResolver;
+  /** Optional OpenCode V2 native connection boundary. */
+  nativeConnections?: NativeConnectionAccess;
   config: {
     googleModels: string[];
     anthropicBinaryPath?: string;

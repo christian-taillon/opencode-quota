@@ -22,6 +22,7 @@ import {
   getMaintainerAnnouncementTargetProviderIds,
   type MaintainerAnnouncement,
 } from "./maintainer-announcements.js";
+import { createRegisteredNativeConnectionAccess } from "./opencode-v2-connections.js";
 import { getQuotaProviderShape, normalizeQuotaProviderId } from "./provider-metadata.js";
 import { projectQuotaProviderResults } from "./quota-accounting-projection.js";
 import { classifyQuotaWindowText } from "./quota-entry-display.js";
@@ -111,6 +112,10 @@ function makeTuiQuotaClient(api: TuiPluginApi) {
       },
     },
   };
+}
+
+function getTuiNativeConnectionAccess(api: TuiPluginApi) {
+  return createRegisteredNativeConnectionAccess(api.client);
 }
 
 export function createTuiQuotaClient(api: TuiPluginApi) {
@@ -537,6 +542,7 @@ async function collectTuiQuotaRenderData(params: {
     : formatStyle;
   const result = await collectQuotaRenderData({
     client: params.runtime.client,
+    nativeConnections: params.runtime.nativeConnections,
     resolveRuntimeProviderIds: params.runtime.resolveRuntimeProviderIds,
     config: params.runtime.config,
     configMeta: params.runtime.configMeta,
@@ -558,6 +564,7 @@ export async function resolveTuiSurfaceRegistration(
   const runtime = await resolveQuotaRuntimeContext({
     client: quotaClient,
     roots: getTuiRuntimeRootHints(api),
+    nativeConnections: getTuiNativeConnectionAccess(api),
   });
   const compact = runtime.config.tuiCompactStatus;
   const hasNativeProviderQuota = hasNativeProviderQuotaClient(api.client);
@@ -612,6 +619,7 @@ export async function loadTuiSessionQuotaSurfaces(params: {
   const runtime = await resolveQuotaRuntimeContext({
     client: quotaClient,
     roots: getTuiRuntimeRootHints(params.api),
+    nativeConnections: getTuiNativeConnectionAccess(params.api),
     sessionID: params.sessionID,
     resolveSessionMeta: (sessionID) => getTuiSessionModelMeta(params.api, sessionID),
     includeSessionMeta: (config) => config.onlyCurrentModel,
@@ -662,6 +670,7 @@ export async function loadTuiHomeBottomStatus(params: {
   const runtime = await resolveQuotaRuntimeContext({
     client: quotaClient,
     roots: getTuiRuntimeRootHints(params.api),
+    nativeConnections: getTuiNativeConnectionAccess(params.api),
     config: initialRuntimeSeed?.config,
     configMeta: initialRuntimeSeed?.configMeta,
     providers: initialRuntimeSeed?.providers,
@@ -745,6 +754,7 @@ export async function loadTuiHomeCompactStatus(params: {
   const runtime = await resolveQuotaRuntimeContext({
     client: quotaClient,
     roots: getTuiRuntimeRootHints(params.api),
+    nativeConnections: getTuiNativeConnectionAccess(params.api),
   });
   const compactSuppressedByNativeProviderQuota =
     runtime.config.tuiCompactStatus.suppressWhenNativeProviderQuota &&
@@ -794,6 +804,7 @@ export async function writeTuiQuotaExportIfEnabled(params: { api: TuiPluginApi }
   const runtime = await resolveQuotaRuntimeContext({
     client: quotaClient,
     roots: getTuiRuntimeRootHints(params.api),
+    nativeConnections: getTuiNativeConnectionAccess(params.api),
   });
 
   if (!runtime.config.enabled || !runtime.config.export.enabled) {

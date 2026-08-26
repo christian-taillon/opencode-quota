@@ -14,8 +14,15 @@ import {
   DEFAULT_OPENAI_AUTH_CACHE_MAX_AGE_MS,
   hasOpenAIOAuthCached,
   queryOpenAIQuota,
+  queryOpenAIQuotaForCredential,
   resolveOpenAIOAuth,
 } from "../src/lib/openai.js";
+
+function fakeJwt(payload: Record<string, unknown>): string {
+  const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  return `${header}.${body}.signature`;
+}
 
 function mockOpenAIUsageResponse(usage: unknown): void {
   mocks.readAuthFileCached.mockResolvedValueOnce({
@@ -52,6 +59,168 @@ describe("openai auth resolution", () => {
       sourceKey: "openai",
       accessToken: "openai-token",
     });
+  });
+
+  it("parses the OpenAI account user id from the OAuth JWT", () => {
+    const accessToken = fakeJwt({
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: "account-1",
+        chatgpt_account_user_id: "user-1",
+      },
+    });
+
+    expect(resolveOpenAIOAuth({ openai: { type: "oauth", access: accessToken } })).toMatchObject({
+      state: "configured",
+      accountId: "account-1",
+      accountUserId: "user-1",
+    });
+  });
+
+  it("adds an explicit ChatGPT account id header for per-credential queries", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            plan_type: "plus",
+            rate_limit: {
+              primary_window: {
+                used_percent: 20,
+                limit_window_seconds: 18_000,
+                reset_after_seconds: 60,
+              },
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock as any);
+
+    await expect(
+      queryOpenAIQuotaForCredential({
+        accessToken: "explicit-access-token",
+        accountId: "account-explicit",
+        expiresAt: Date.now() + 60_000,
+      }),
+    ).resolves.toMatchObject({ success: true });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://chatgpt.com/backend-api/wham/usage",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer explicit-access-token",
+          "ChatGPT-Account-Id": "account-explicit",
+        }),
+      }),
+    );
+  });
+
+  it("derives the account id and email for a per-credential query", async () => {
+    const accessToken = fakeJwt({
+      "https://api.openai.com/profile": { email: "account@example.test" },
+      "https://api.openai.com/auth": { chatgpt_account_id: "account-derived" },
+    });
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            plan_type: "plus",
+            rate_limit: {
+              primary_window: {
+                used_percent: 10,
+                limit_window_seconds: 18_000,
+                reset_after_seconds: 60,
+              },
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock as any);
+
+    const result = await queryOpenAIQuotaForCredential({
+      accessToken,
+      expiresAt: Date.now() + 60_000,
+    });
+
+    expect(result).toMatchObject({ success: true, email: "account@example.test" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        headers: expect.objectContaining({ "ChatGPT-Account-Id": "account-derived" }),
+      }),
+    );
+  });
+
+  it("does not request quota for an expired per-credential token", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock as any);
+
+    await expect(
+      queryOpenAIQuotaForCredential({
+        accessToken: "expired-access-token",
+        expiresAt: Date.now(),
+      }),
+    ).resolves.toEqual({ success: false, error: "Token expired" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the existing quota parsing behind per-credential queries", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () => new Response(JSON.stringify(businessIndividualLimitUsage), { status: 200 }),
+      ) as any,
+    );
+
+    const result = await queryOpenAIQuotaForCredential({
+      accessToken: "per-credential-token",
+      expiresAt: Date.now() + 60_000,
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      label: "OpenAI (Business)",
+      windows: {
+        monthly: {
+          percentRemaining: 100,
+          resetTimeIso: new Date(1_785_542_400_000).toISOString(),
+        },
+      },
+    });
+  });
+
+  it("redacts the access token from API errors", async () => {
+    const accessToken = "api-error-secret-token";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(`provider echoed ${accessToken}`, { status: 401 })) as any,
+    );
+
+    const result = await queryOpenAIQuotaForCredential({ accessToken });
+
+    expect(result).toEqual({
+      success: false,
+      error: "OpenAI API error 401: provider echoed [redacted]",
+    });
+    expect(JSON.stringify(result)).not.toContain(accessToken);
+  });
+
+  it("redacts the access token from thrown network errors", async () => {
+    const accessToken = "network-error-secret-token";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error(`request failed for ${accessToken}`);
+      }) as any,
+    );
+
+    const result = await queryOpenAIQuotaForCredential({ accessToken });
+
+    expect(result).toEqual({
+      success: false,
+      error: "request failed for [redacted]",
+    });
+    expect(JSON.stringify(result)).not.toContain(accessToken);
   });
 
   it("returns null when quota is not configured", async () => {
@@ -306,6 +475,7 @@ describe("openai auth resolution", () => {
     [" TEAM ", "OpenAI (Business)"],
     ["business_trial", "OpenAI (business_trial)"],
     ["team_workspace", "OpenAI (team_workspace)"],
+    ["team (role:owner)", "OpenAI (Business)"],
     ["plus", "OpenAI (Plus)"],
     ["pro", "OpenAI (Pro)"],
   ])("derives the plan label for %j", async (planType, expectedLabel) => {

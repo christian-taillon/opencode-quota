@@ -1,22 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 
 const pluginMocks = vi.hoisted(() => ({
-  tui: {
+  server: {
     id: "@slkiser/opencode-quota",
     setup: vi.fn(),
   },
 }));
 
-vi.mock("../src/tui-v2.js", () => ({
-  default: pluginMocks.tui,
-}));
-
-vi.mock("@opentui/solid/preload", () => ({}));
+vi.mock("../src/v2-plugin.js", () => ({ default: pluginMocks.server }));
 
 describe("package entrypoint", () => {
-  it("exports the V2 TUI plugin on the default export", async () => {
+  it("exports the V2 server plugin entrypoint", async () => {
     const mod = await import("../src/index.js");
 
-    expect(mod.default).toBe(pluginMocks.tui);
+    expect(mod.default).toBe(pluginMocks.server);
   });
 });

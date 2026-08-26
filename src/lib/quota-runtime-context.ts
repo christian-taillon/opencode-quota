@@ -5,6 +5,7 @@ import { createLoadConfigMeta, loadConfig } from "./config.js";
 import type { RuntimeContextRootHints, RuntimeContextRoots } from "./config-file-utils.js";
 import { resolveRuntimeContextRoots } from "./config-file-utils.js";
 import type { QuotaProvider, QuotaProviderContext } from "./entries.js";
+import type { NativeConnectionAccess } from "./opencode-v2-connections.js";
 import { cloneQuotaProviders } from "./quota-providers.js";
 import { configureQuotaTelemetry } from "./quota-telemetry.js";
 import {
@@ -24,6 +25,7 @@ export interface QuotaSessionModelContext {
 export interface ResolveQuotaRuntimeContextParams {
   client: QuotaRuntimeClient;
   roots: RuntimeContextRootHints;
+  nativeConnections?: NativeConnectionAccess;
   config?: QuotaToastConfig;
   sessionID?: string;
   sessionMeta?: QuotaSessionModelContext;
@@ -36,6 +38,7 @@ export interface ResolveQuotaRuntimeContextParams {
 
 export interface QuotaRuntimeContext {
   client: QuotaRuntimeClient;
+  nativeConnections?: NativeConnectionAccess;
   roots: RuntimeContextRoots;
   config: QuotaToastConfig;
   configMeta: LoadConfigMeta;
@@ -90,6 +93,7 @@ export async function resolveQuotaRuntimeContext(
 
   return {
     client: params.client,
+    ...(params.nativeConnections ? { nativeConnections: params.nativeConnections } : {}),
     roots,
     config,
     configMeta,
@@ -114,6 +118,7 @@ export function createQuotaRuntimeRequestContext(runtime: Pick<QuotaRuntimeConte
 
 export function createQuotaProviderRuntimeContext(runtime: {
   client: QuotaRuntimeClient;
+  nativeConnections?: NativeConnectionAccess;
   config: QuotaToastConfig;
   session: QuotaRuntimeContext["session"];
   resolveRuntimeProviderIds: RuntimeProviderIdResolver;
@@ -125,6 +130,7 @@ export function createQuotaProviderRuntimeContext(runtime: {
 
   return {
     client: runtime.client,
+    ...(runtime.nativeConnections ? { nativeConnections: runtime.nativeConnections } : {}),
     resolveRuntimeProviderIds: runtime.resolveRuntimeProviderIds,
     config: {
       googleModels: runtime.config.googleModels,
