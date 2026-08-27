@@ -9,6 +9,7 @@ import { existsSync } from "fs";
 import { createRequire } from "module";
 import { isAbsolute, join, resolve } from "path";
 
+import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
 import {
   getOpencodeRuntimeDirCandidates,
   getOpencodeRuntimeDirs,
@@ -21,7 +22,7 @@ const runtimeRequire = createRequire(import.meta.url);
 
 type CredentialDatabase = {
   close(): void;
-  prepare(sql: string): { all(...params: string[]): unknown[] };
+  prepare(sql: string): { all(...params: unknown[]): unknown[] };
 };
 
 type CredentialDatabaseConstructor = new (
@@ -36,6 +37,36 @@ type AuthCacheEntry = {
 };
 
 let authCache: AuthCacheEntry | null = null;
+
+// ---------------------------------------------------------------------------
+// Native multi-connection reader
+// ---------------------------------------------------------------------------
+
+/**
+ * One OpenCode credential row with its parsed value.
+ *
+ * `value` contains the credential material (access tokens, keys, metadata).
+ * It must never be logged, stringified, or exposed outside the quota query
+ * layer.
+ */
+export type OpenCodeCredentialConnection = {
+  readonly id: string;
+  readonly integrationID: string;
+  readonly label?: string;
+  readonly value: Record<string, unknown>;
+};
+
+export type OpenCodeCredentialConnectionRead =
+  | { state: "available"; connections: readonly OpenCodeCredentialConnection[] }
+  | { state: "unavailable" };
+
+type ConnectionCacheEntry = {
+  timestamp: number;
+  value: OpenCodeCredentialConnectionRead;
+  inFlight?: Promise<OpenCodeCredentialConnectionRead>;
+};
+
+const connectionCache = new Map<string, ConnectionCacheEntry>();
 
 /**
  * Get candidate legacy auth.json paths for Cursor OAuth compatibility.
@@ -164,6 +195,154 @@ function parseCredentialValue(value: string): Record<string, unknown> | null {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Multi-connection database reader (native OpenCode V2)
+// ---------------------------------------------------------------------------
+
+function getCredentialColumnNames(database: CredentialDatabase): Set<string> {
+  const rows = database.prepare("PRAGMA table_info(credential)").all() as Array<{
+    name?: unknown;
+  }>;
+  return new Set(
+    rows.map((row) => row.name).filter((name): name is string => typeof name === "string"),
+  );
+}
+
+function readCredentialConnectionsFromDatabase(
+  path: string,
+  integrationID: string,
+): OpenCodeCredentialConnectionRead {
+  if (!existsSync(path)) return { state: "unavailable" };
+
+  let database: CredentialDatabase | undefined;
+  try {
+    database = openCredentialDatabase(path);
+    const columns = getCredentialColumnNames(database);
+
+    if (!columns.has("id") || !columns.has("integration_id") || !columns.has("value")) {
+      return { state: "unavailable" };
+    }
+
+    const labelExpression = columns.has("label") ? "label" : "NULL AS label";
+    const orderBy = columns.has("time_created")
+      ? "time_created ASC, id ASC"
+      : columns.has("time_updated")
+        ? "time_updated ASC, id ASC"
+        : "id ASC";
+
+    const rows = database
+      .prepare(
+        `SELECT id, integration_id, ${labelExpression}, value FROM credential WHERE integration_id = ? ORDER BY ${orderBy}`,
+      )
+      .all(integrationID) as Array<{
+      id?: unknown;
+      integration_id?: unknown;
+      label?: unknown;
+      value?: unknown;
+    }>;
+
+    const connections: OpenCodeCredentialConnection[] = [];
+
+    for (const row of rows) {
+      if (
+        typeof row.id !== "string" ||
+        typeof row.integration_id !== "string" ||
+        typeof row.value !== "string"
+      ) {
+        continue;
+      }
+
+      const value = parseCredentialValue(row.value);
+      if (!value) continue;
+
+      const labelValue =
+        typeof row.label === "string" ? sanitizeSingleLineDisplayText(row.label).trim() : "";
+
+      connections.push({
+        id: row.id,
+        integrationID: row.integration_id,
+        ...(labelValue ? { label: labelValue.slice(0, 80) } : {}),
+        value,
+      });
+    }
+
+    return { state: "available", connections };
+  } catch {
+    return { state: "unavailable" };
+  } finally {
+    database?.close();
+  }
+}
+
+function readCredentialConnectionsFromDatabases(
+  paths: string[],
+  integrationID: string,
+): OpenCodeCredentialConnectionRead {
+  for (const path of paths) {
+    const result = readCredentialConnectionsFromDatabase(path, integrationID);
+    if (result.state === "available") return result;
+  }
+  return { state: "unavailable" };
+}
+
+/**
+ * Read all OpenCode native credential connections for a given integration ID.
+ *
+ * Unlike {@link readAuthFile} which collapses to one credential per
+ * integration, this returns every matching row so multi-account quota can
+ * query each connection independently.
+ *
+ * The database is opened read-only. Credential values are never logged.
+ */
+export async function readCredentialConnections(
+  integrationID: string,
+): Promise<OpenCodeCredentialConnectionRead> {
+  return readCredentialConnectionsFromDatabases(getCredentialDatabasePaths(), integrationID);
+}
+
+/**
+ * Cached multi-connection reader for frequently triggered code paths (e.g.
+ * sidebar refresh). Uses the same 5-second max age as the legacy auth cache.
+ */
+export async function readCredentialConnectionsCached(
+  integrationID: string,
+  params?: { maxAgeMs?: number },
+): Promise<OpenCodeCredentialConnectionRead> {
+  const maxAgeMs = Math.max(0, params?.maxAgeMs ?? DEFAULT_AUTH_CACHE_MAX_AGE_MS);
+  const now = Date.now();
+  const cacheKey = integrationID;
+
+  const existing = connectionCache.get(cacheKey);
+  if (existing && now - existing.timestamp <= maxAgeMs) {
+    return existing.value;
+  }
+
+  if (existing?.inFlight) {
+    return existing.inFlight;
+  }
+
+  const inFlight = (async () => {
+    const value = await readCredentialConnections(integrationID);
+    connectionCache.set(cacheKey, { timestamp: Date.now(), value });
+    return value;
+  })();
+
+  connectionCache.set(cacheKey, {
+    timestamp: existing?.timestamp ?? 0,
+    value: existing?.value ?? { state: "unavailable" },
+    inFlight,
+  });
+
+  try {
+    return await inFlight;
+  } finally {
+    const entry = connectionCache.get(cacheKey);
+    if (entry?.inFlight === inFlight) {
+      entry.inFlight = undefined;
+    }
+  }
+}
+
 /**
  * Cached auth reader for frequently triggered code paths (e.g. per-question hooks).
  * This avoids repeated filesystem reads while keeping auth updates visible quickly.
@@ -204,4 +383,5 @@ export async function readAuthFileCached(params?: { maxAgeMs?: number }): Promis
 /** Test helper to clear cached auth state between test cases. */
 export function clearReadAuthFileCacheForTests(): void {
   authCache = null;
+  connectionCache.clear();
 }

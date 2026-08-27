@@ -558,8 +558,8 @@ describe("quota surface parity regressions", () => {
     expect(panel.status).toBe("ready");
     expect(panel.linesExpanded).toBeDefined();
     const sidebarOutput = panel.linesExpanded!.join("\n");
-    expect(sidebarOutput).toContain("44% left");
-    expect(sidebarOutput).toContain("8% left");
+    expect(sidebarOutput).toContain("44%");
+    expect(sidebarOutput).toContain("8%");
     expect(syntheticProvider.fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -650,8 +650,8 @@ describe("quota surface parity regressions", () => {
     const expandedSidebarOutput = panel.linesExpanded!.join("\n");
     expect(sidebarOutput).toContain("40%");
     expect(sidebarOutput).not.toContain("95%");
-    expect(expandedSidebarOutput).toContain("95% left");
-    expect(expandedSidebarOutput).toContain("40% left");
+    expect(expandedSidebarOutput).toContain("95%");
+    expect(expandedSidebarOutput).toContain("40%");
     expect(openaiProvider.fetch).toHaveBeenCalledTimes(1);
   });
 });

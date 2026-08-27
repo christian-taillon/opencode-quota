@@ -295,8 +295,8 @@ describe("package manifest compatibility", () => {
       types: "./dist/index.d.ts",
     });
     expect(pkg.exports?.["./tui"]).toEqual({
-      default: "./dist/tui.js",
-      types: "./dist/tui.d.ts",
+      default: "./dist/tui-v2.js",
+      types: "./dist/tui-v2.d.ts",
     });
   });
 
@@ -393,7 +393,7 @@ describe("package manifest compatibility", () => {
     expect(packedSmoke).toContain("@slkiser/opencode-quota/tui");
     expect(packedSmoke).toContain('import.meta.resolve("@slkiser/opencode-quota/tui")');
     expect(packedSmoke).toContain('readFile(tuiExportPath, "utf8")');
-    expect(packedSmoke).toContain("dist\\\\/tui\\\\.js");
+    expect(packedSmoke).toContain("dist\\\\/tui-v2\\\\.js");
     expect(packedSmoke).not.toContain('await import("@slkiser/opencode-quota/tui")');
     expect(packedSmoke).toContain('const { metrics } = await import("@opentelemetry/api");');
     expect(packedSmoke).toContain('assert.equal(typeof metrics.getMeter, "function");');

@@ -68,11 +68,13 @@ try {
 
     const tuiExportUrl = import.meta.resolve("@slkiser/opencode-quota/tui");
     const tuiExportPath = fileURLToPath(tuiExportUrl);
-    assert.match(tuiExportPath, /node_modules\\/\\@slkiser\\/opencode-quota\\/dist\\/tui\\.js$/);
+    assert.match(tuiExportPath, /node_modules\\/\\@slkiser\\/opencode-quota\\/dist\\/tui-v2\\.js$/);
     const tuiSource = await readFile(tuiExportPath, "utf8");
     assert.ok(tuiSource.includes("@slkiser/opencode-quota"));
-    assert.ok(tuiSource.includes("const pluginModule"));
-    assert.ok(tuiSource.includes("tui"));
+    assert.ok(tuiSource.includes("const plugin ="));
+    assert.match(tuiSource, /slash:s*{s*name:/s);
+    assert.ok(tuiSource.includes("setup(context)"));
+    assert.ok(!tuiSource.includes("slashName:"));
     assert.ok(!tuiSource.includes("jsx-dev-runtime"));
 
     const pkg = JSON.parse(

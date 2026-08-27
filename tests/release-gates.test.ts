@@ -236,7 +236,7 @@ describe("v4 release gates", () => {
       manifestPath,
       JSON.stringify({
         files: requiredPackageFiles()
-          .filter((entry) => entry !== "dist/tui.js")
+          .filter((entry) => entry !== "dist/tui-v2.js")
           .map((entry) => ({ path: entry })),
       }),
       "utf8",
@@ -244,7 +244,7 @@ describe("v4 release gates", () => {
 
     const result = run(packageScript, [manifestPath]);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("dist/tui.js");
+    expect(result.stderr).toContain("dist/tui-v2.js");
   });
 
   it("verifies one exact release tarball and rejects content tampering", async () => {

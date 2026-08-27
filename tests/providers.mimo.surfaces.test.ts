@@ -72,7 +72,8 @@ describe("Xiaomi MiMo structured four-surface formatting", () => {
     for (const output of Object.values(outputs)) {
       expect(output).toContain("Xiaomi MiMo");
       expect(output).toContain("Standard");
-      expect(output).toContain("Monthly quota");
+      if (output === outputs.sidebar) expect(output).toContain("Month");
+      else expect(output).toContain("Monthly quota");
       expect(output).toContain("75%");
       expect(output).toContain("Total balance");
       expect(output).toContain("USD 50.00");

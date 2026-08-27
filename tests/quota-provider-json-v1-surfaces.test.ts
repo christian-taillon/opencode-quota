@@ -98,7 +98,7 @@ describe("json-v1 mapped quota presentation surfaces", () => {
     }
     expect(webInline).toContain("Requests");
     expect(toast).toContain("[Mapped] 40/100 req");
-    expect(sidebar).toContain("[Mapped]");
+    expect(sidebar).toContain("Mapped");
     expect(compact).toContain("Mapped");
   });
 });

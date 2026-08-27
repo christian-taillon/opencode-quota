@@ -94,6 +94,22 @@ type MessageRow = {
   data: string;
 };
 
+type ProjectedMessageRow = {
+  id: unknown;
+  session_id: unknown;
+  time_created: unknown;
+  time_updated?: unknown;
+  role: unknown;
+  provider_id: unknown;
+  model_id: unknown;
+  time_completed: unknown;
+  tokens_input: unknown;
+  tokens_output: unknown;
+  tokens_reasoning: unknown;
+  tokens_cache_read: unknown;
+  tokens_cache_write: unknown;
+};
+
 type SessionRow = {
   id: string;
   title: string | null;
@@ -195,6 +211,15 @@ function chunkArray<T>(items: readonly T[], chunkSize: number): T[][] {
   return chunks;
 }
 
+function guardedJsonScalar(path: string): string {
+  return (
+    `CASE WHEN json_valid(data) THEN CASE json_type(data, '${path}') ` +
+    `WHEN 'integer' THEN CAST(json_extract(data, '${path}') AS REAL) ` +
+    `WHEN 'real' THEN json_extract(data, '${path}') ` +
+    `WHEN 'text' THEN json_extract(data, '${path}') END END`
+  );
+}
+
 function buildMessageQuery(params: {
   sessionID?: string;
   sessionIDs?: string[];
@@ -231,7 +256,17 @@ function buildMessageQuery(params: {
   }
 
   const sql =
-    `SELECT id, session_id, time_created, time_updated, data FROM "message"` +
+    `SELECT id, session_id, time_created, time_updated, ` +
+    `${guardedJsonScalar("$.role")} AS role, ` +
+    `${guardedJsonScalar("$.providerID")} AS provider_id, ` +
+    `${guardedJsonScalar("$.modelID")} AS model_id, ` +
+    `${guardedJsonScalar("$.time.completed")} AS time_completed, ` +
+    `${guardedJsonScalar("$.tokens.input")} AS tokens_input, ` +
+    `${guardedJsonScalar("$.tokens.output")} AS tokens_output, ` +
+    `${guardedJsonScalar("$.tokens.reasoning")} AS tokens_reasoning, ` +
+    `${guardedJsonScalar("$.tokens.cache.read")} AS tokens_cache_read, ` +
+    `${guardedJsonScalar("$.tokens.cache.write")} AS tokens_cache_write` +
+    ` FROM "message"` +
     (where.length ? ` WHERE ${where.join(" AND ")}` : "") +
     ` ORDER BY time_created ASC, id ASC`;
 
@@ -251,6 +286,15 @@ async function hasJsonExtract(conn: {
   }
 }
 
+async function requireProjectedMessageReads(conn: {
+  get<T = unknown>(sql: string, params?: unknown[]): T | null;
+}): Promise<void> {
+  if (await hasJsonExtract(conn)) return;
+  throw new Error(
+    "OpenCode SQLite JSON functions are unavailable; refusing to scan raw message payloads.",
+  );
+}
+
 function mapAssistantMessages(rows: MessageRow[]): OpenCodeMessage[] {
   const out: OpenCodeMessage[] = [];
   for (const row of rows) {
@@ -258,6 +302,41 @@ function mapAssistantMessages(rows: MessageRow[]): OpenCodeMessage[] {
     if (!msg) continue;
     if (String(msg.role).toLowerCase() !== "assistant") continue;
     out.push(msg);
+  }
+  return out;
+}
+
+function mapProjectedAssistantMessages(rows: ProjectedMessageRow[]): OpenCodeMessage[] {
+  const out: OpenCodeMessage[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    if (typeof row.id !== "string" || typeof row.session_id !== "string") continue;
+    if (typeof row.time_created !== "number") continue;
+
+    const role = normalizeString(row.role) ?? "unknown";
+    const message: OpenCodeMessage = {
+      id: row.id,
+      sessionID: row.session_id,
+      role,
+      providerID: normalizeString(row.provider_id),
+      modelID: normalizeString(row.model_id),
+      tokens: {
+        input: row.tokens_input,
+        output: row.tokens_output,
+        reasoning: row.tokens_reasoning,
+        cache: {
+          read: row.tokens_cache_read,
+          write: row.tokens_cache_write,
+        },
+      } as unknown as OpenCodeTokens,
+      time: {
+        created: row.time_created,
+        completed: normalizeNumber(row.time_completed),
+      },
+    };
+
+    if (String(message.role).toLowerCase() !== "assistant") continue;
+    out.push(message);
   }
   return out;
 }
@@ -333,19 +412,11 @@ export async function getOpenCodeDbStats(): Promise<OpenCodeDbStats> {
     const sessionRow = conn.get<{ c: number }>(`SELECT count(*) as c FROM "session"`);
     const messageRow = conn.get<{ c: number }>(`SELECT count(*) as c FROM "message"`);
 
-    let assistantCount = 0;
-    if (await hasJsonExtract(conn)) {
-      const a = conn.get<{ c: number }>(
-        `SELECT count(*) as c FROM "message" WHERE json_extract(data, '$.role') = 'assistant'`,
-      );
-      assistantCount = typeof a?.c === "number" ? a.c : 0;
-    } else {
-      const rows = conn.all<{ data: string }>(`SELECT data FROM "message"`);
-      for (const r of rows) {
-        const payload = asRecord(safeJsonParse(r.data));
-        if (payload?.role === "assistant") assistantCount += 1;
-      }
-    }
+    await requireProjectedMessageReads(conn);
+    const assistantRow = conn.get<{ c: number }>(
+      `SELECT count(*) as c FROM "message" WHERE ${guardedJsonScalar("$.role")} = 'assistant'`,
+    );
+    const assistantCount = typeof assistantRow?.c === "number" ? assistantRow.c : 0;
 
     return {
       dbPath: db.dbPath,
@@ -367,9 +438,10 @@ export async function iterAssistantMessages(params: {
 
   const conn = await db.open();
   try {
+    await requireProjectedMessageReads(conn);
     const q = buildMessageQuery({ sinceMs: params.sinceMs, untilMs: params.untilMs });
-    const rows = conn.all<MessageRow>(q.sql, q.args);
-    return mapAssistantMessages(rows);
+    const rows = conn.all<ProjectedMessageRow>(q.sql, q.args);
+    return mapProjectedAssistantMessages(rows);
   } finally {
     conn.close();
   }
@@ -441,9 +513,10 @@ export async function iterAssistantMessagesForSession(params: {
       throw new SessionNotFoundError(sessionID, db.dbPath);
     }
 
+    await requireProjectedMessageReads(conn);
     const q = buildMessageQuery({ sessionID, sinceMs, untilMs });
-    const rows = conn.all<MessageRow>(q.sql, q.args);
-    return mapAssistantMessages(rows);
+    const rows = conn.all<ProjectedMessageRow>(q.sql, q.args);
+    return mapProjectedAssistantMessages(rows);
   } finally {
     conn.close();
   }
@@ -467,6 +540,7 @@ export async function iterAssistantMessagesForSessions(params: {
 
   const conn = await db.open();
   try {
+    await requireProjectedMessageReads(conn);
     const reservedArgs =
       (typeof params.sinceMs === "number" ? 1 : 0) + (typeof params.untilMs === "number" ? 1 : 0);
     const maxSessionIdsPerQuery = Math.max(1, SQLITE_MAX_MESSAGE_QUERY_ARGS - reservedArgs);
@@ -478,8 +552,8 @@ export async function iterAssistantMessagesForSessions(params: {
         sinceMs: params.sinceMs,
         untilMs: params.untilMs,
       });
-      const rows = conn.all<MessageRow>(q.sql, q.args);
-      messages.push(...mapAssistantMessages(rows));
+      const rows = conn.all<ProjectedMessageRow>(q.sql, q.args);
+      messages.push(...mapProjectedAssistantMessages(rows));
     }
 
     messages.sort(compareMessageOrder);

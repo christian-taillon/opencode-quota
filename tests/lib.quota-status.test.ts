@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-
+import { getOpenCodeDbStats } from "../src/lib/opencode-storage.js";
 import { aggregateUsage } from "../src/lib/quota-stats.js";
 
 import {
@@ -154,6 +154,14 @@ vi.mock("../src/lib/quota-stats.js", () => ({
 describe("buildQuotaStatusReport", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("propagates unavailable storage capability without fabricating counts", async () => {
+    const errorMessage =
+      "OpenCode SQLite JSON functions are unavailable; refusing to scan raw message payloads.";
+    vi.mocked(getOpenCodeDbStats).mockRejectedValueOnce(new Error(errorMessage));
+
+    await expect(buildQuotaStatusReportForTest()).rejects.toThrow(errorMessage);
   });
 
   it("uses a Unicode ellipsis for truncated pricing diagnostic lists", async () => {

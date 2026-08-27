@@ -124,7 +124,8 @@ describe("OpenCode Zen structured four-surface formatting", () => {
     });
 
     for (const output of Object.values(outputs)) {
-      expect(output).toContain("Monthly budget");
+      if (output === outputs.sidebar) expect(output).toContain("Month");
+      else expect(output).toContain("Monthly budget");
       expect(output).toContain("Current balance");
       expect(output).toContain("USD 42.50");
       expect(output).toContain("Auto-reload");

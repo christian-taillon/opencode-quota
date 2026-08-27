@@ -69,6 +69,40 @@ describe("tui dist packaging", () => {
     expect(typeof mod.default.tui).toBe("function");
   });
 
+  it("loads the active beta TUI module with setup and beta command shape", async () => {
+    const mod = await import("../dist/tui-v2.js");
+
+    expect(mod.default.id).toBe("@slkiser/opencode-quota");
+    expect(typeof mod.default.setup).toBe("function");
+    expect((mod.default as { tui?: unknown }).tui).toBeUndefined();
+
+    const source = await readFile(new URL("../dist/tui-v2.js", import.meta.url), "utf8");
+    expect(source).toMatch(/slash:\s*\{\s*name:\s*spec\.slashName\s*\}/s);
+  });
+
+  it("routes the published ./tui export to the active beta artifact", async () => {
+    const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+
+    expect(pkg.exports?.["./tui"]).toEqual({
+      default: "./dist/tui-v2.js",
+      types: "./dist/tui-v2.d.ts",
+    });
+  });
+
+  it("TUI module uses slashName command registration (modern keymap API)", async () => {
+    const mod = await import("../dist/tui.js");
+
+    // The modern TUI plugin module shape: { id, tui }
+    expect(mod.default.id).toBe("@slkiser/opencode-quota");
+    expect(typeof mod.default.tui).toBe("function");
+    // The server property must be absent (TUI and server are separate modules)
+    expect(mod.default.server).toBeUndefined();
+
+    // Verify the built source uses slashName (modern API), not slash: { name }
+    const source = await readFile(new URL("../dist/tui.js", import.meta.url), "utf8");
+    expect(source).toContain("slashName");
+  });
+
   it("can load the packaged root module", async () => {
     const mod = await import("../dist/index.js");
 

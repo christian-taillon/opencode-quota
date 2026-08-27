@@ -1,10 +1,20 @@
-import type { IntegrationHooks, PluginContext } from "@opencode-ai/plugin/v2/promise";
+/**
+ * OpenCode V2 native credential connection access.
+ *
+ * The TUI reads OpenCode's SQLite credential database directly to enumerate
+ * and resolve native connections. This avoids any server→TUI module-global
+ * bridge: the TUI and server plugins are separate runtimes that do not share
+ * module state.
+ *
+ * The database is always opened read-only. Credential values are never logged.
+ */
 
 import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
 import type { OpenAIQuotaCredential } from "./openai.js";
-
-type NativeConnectionInfo = Parameters<IntegrationHooks["connection"]["resolve"]>[0];
-type NativeCredentialValue = Awaited<ReturnType<IntegrationHooks["connection"]["resolve"]>>;
+import {
+  type OpenCodeCredentialConnection,
+  readCredentialConnectionsCached,
+} from "./opencode-auth.js";
 
 export type NativeConnectionRef = {
   readonly id: string;
@@ -16,146 +26,72 @@ export interface NativeConnectionAccess {
   resolve(connection: NativeConnectionRef): Promise<unknown>;
 }
 
-type V2IntegrationClient = {
-  v2: {
-    integration: {
-      get(input: { integrationID: string }): Promise<unknown>;
-    };
-  };
-};
-
-type NativeConnectionResolverContext = Pick<PluginContext, "integration">;
-
-let registeredResolver:
-  | ((connection: NativeConnectionInfo) => Promise<NativeCredentialValue | undefined>)
-  | undefined;
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function getV2IntegrationClient(client: unknown): V2IntegrationClient {
-  if (!isRecord(client) || !isRecord(client.v2) || !isRecord(client.v2.integration)) {
-    throw new Error("OpenCode V2 integration API unavailable");
-  }
+// ---------------------------------------------------------------------------
+// Database-backed connection access (used by TUI runtime)
+// ---------------------------------------------------------------------------
 
-  const get = client.v2.integration.get;
-  if (typeof get !== "function") {
-    throw new Error("OpenCode V2 integration API unavailable");
-  }
-
-  return client as unknown as V2IntegrationClient;
-}
-
-function isCredentialConnection(
-  value: unknown,
-): value is Extract<NativeConnectionInfo, { type: "credential" }> {
-  return (
-    isRecord(value) &&
-    value.type === "credential" &&
-    typeof value.id === "string" &&
-    value.id.trim().length > 0
-  );
-}
-
-function sanitizeConnectionLabel(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const label = sanitizeSingleLineDisplayText(value).slice(0, 80);
-  return label || undefined;
-}
-
-function getIntegrationConnections(response: unknown): readonly unknown[] {
-  if (
-    !isRecord(response) ||
-    !isRecord(response.data) ||
-    !Array.isArray(response.data.connections)
-  ) {
-    throw new Error("Invalid OpenCode V2 integration response");
-  }
-  return response.data.connections;
-}
-
-export function createNativeConnectionAccess(params: {
-  client: unknown;
-  resolve: (connection: NativeConnectionInfo) => Promise<NativeCredentialValue | undefined>;
-}): NativeConnectionAccess {
-  const rawConnections = new WeakMap<NativeConnectionRef, NativeConnectionInfo>();
+/**
+ * Create a {@link NativeConnectionAccess} backed by OpenCode's SQLite
+ * credential database. Both `list` and `resolve` read from the same
+ * database query (cached for the sidebar refresh interval).
+ */
+export function createNativeConnectionAccess(): NativeConnectionAccess {
+  const connectionMap = new Map<string, OpenCodeCredentialConnection>();
 
   return {
     async list(integrationID: string): Promise<readonly NativeConnectionRef[]> {
-      const client = getV2IntegrationClient(params.client);
-      const response = await client.v2.integration.get({ integrationID });
-      const connections: NativeConnectionRef[] = [];
+      const result = await readCredentialConnectionsCached(integrationID);
+      if (result.state !== "available") return [];
 
-      for (const value of getIntegrationConnections(response)) {
-        if (!isCredentialConnection(value)) continue;
+      connectionMap.clear();
+      const refs: NativeConnectionRef[] = [];
 
-        const label = sanitizeConnectionLabel(value.label);
-        const ref: NativeConnectionRef = {
-          id: value.id,
+      for (const connection of result.connections) {
+        connectionMap.set(connection.id, connection);
+        const label =
+          typeof connection.label === "string"
+            ? sanitizeSingleLineDisplayText(connection.label).slice(0, 80)
+            : undefined;
+        refs.push({
+          id: connection.id,
           ...(label ? { label } : {}),
-        };
-        rawConnections.set(ref, value);
-        connections.push(ref);
+        });
       }
 
-      return connections;
+      return refs;
     },
 
     async resolve(connection: NativeConnectionRef): Promise<unknown> {
-      const raw = rawConnections.get(connection);
+      const raw = connectionMap.get(connection.id);
       if (!raw) throw new Error("Unknown OpenCode V2 native connection");
-      return params.resolve(raw);
+      return raw.value;
     },
   };
 }
 
-export function createNativeConnectionAccessFromPluginContext(
-  client: unknown,
-  context: NativeConnectionResolverContext,
-): NativeConnectionAccess {
-  return createNativeConnectionAccess({
-    client,
-    resolve: (connection) => context.integration.connection.resolve(connection),
-  });
-}
+// ---------------------------------------------------------------------------
+// Test helper: create a connection access with a custom resolve function.
+// Used by unit tests that mock credential resolution.
+// ---------------------------------------------------------------------------
 
-export function isNativeConnectionResolverContext(
-  value: unknown,
-): value is NativeConnectionResolverContext {
-  if (!isRecord(value) || !isRecord(value.integration) || !isRecord(value.integration.connection)) {
-    return false;
-  }
-  return typeof value.integration.connection.resolve === "function";
-}
-
-export function registerNativeConnectionResolver(
-  context: NativeConnectionResolverContext,
-): () => void {
-  const resolver = (connection: NativeConnectionInfo) =>
-    context.integration.connection.resolve(connection);
-  const previous = registeredResolver;
-  registeredResolver = resolver;
-
-  return () => {
-    if (registeredResolver === resolver) registeredResolver = previous;
+export function createNativeConnectionAccessForTest(params: {
+  list: (integrationID: string) => Promise<readonly NativeConnectionRef[]>;
+  resolve: (connection: NativeConnectionRef) => Promise<unknown>;
+}): NativeConnectionAccess {
+  return {
+    list: params.list,
+    resolve: params.resolve,
   };
 }
 
-export function createRegisteredNativeConnectionAccess(
-  client: unknown,
-): NativeConnectionAccess | undefined {
-  if (!registeredResolver) return undefined;
-
-  return createNativeConnectionAccess({
-    client,
-    resolve: (connection) => {
-      const resolver = registeredResolver;
-      if (!resolver) throw new Error("OpenCode V2 connection resolver unavailable");
-      return resolver(connection);
-    },
-  });
-}
+// ---------------------------------------------------------------------------
+// Credential conversion (moved here from the original module; used by the
+// OpenAI provider to convert raw credential values to quota query input).
+// ---------------------------------------------------------------------------
 
 function metadataRecord(value: unknown): Record<string, unknown> | undefined {
   if (!isRecord(value)) return undefined;

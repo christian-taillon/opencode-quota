@@ -7,9 +7,8 @@ import { createSignal, onCleanup, Show } from "solid-js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
 import { formatQuotaRows } from "./lib/format.js";
 import {
-  createNativeConnectionAccessFromPluginContext,
-  createRegisteredNativeConnectionAccess,
-  isNativeConnectionResolverContext,
+  createNativeConnectionAccess,
+  type NativeConnectionAccess,
 } from "./lib/opencode-v2-connections.js";
 import {
   buildQuotaDialogCommandOutput,
@@ -106,7 +105,7 @@ async function getQuotaMessage(
 ): Promise<{ message: string; duration: number; activeProviderCount: number } | undefined> {
   const runtime = await resolveQuotaRuntimeContext({
     client: context.client as never,
-    nativeConnections: getNativeConnectionAccess(context),
+    nativeConnections: getNativeConnectionAccess(),
     roots: { fallbackDirectory: process.cwd() },
     sessionID,
     resolveSessionMeta: (id) => getSessionModelMeta(context.client, id),
@@ -127,7 +126,11 @@ async function getQuotaMessage(
     return;
   }
 
-  const formatStyle = resolveQuotaFormatStyle(config.formatStyle);
+  const rootFormatStyle = resolveQuotaFormatStyle(config.formatStyle);
+  const effectiveFormatStyle =
+    surface === "sidebar" && config.tuiSidebarPanel.formatStyle
+      ? resolveQuotaFormatStyle(config.tuiSidebarPanel.formatStyle)
+      : rootFormatStyle;
   const result = await collectQuotaRenderData({
     client: runtime.client,
     nativeConnections: runtime.nativeConnections,
@@ -136,7 +139,7 @@ async function getQuotaMessage(
     configMeta: runtime.configMeta,
     request: createQuotaRuntimeRequestContext(runtime),
     surfaceExplicitProviderIssues: true,
-    formatStyle,
+    formatStyle: effectiveFormatStyle,
     providers: runtime.providers,
   });
   const data = result.data;
@@ -147,9 +150,7 @@ async function getQuotaMessage(
             data,
             config: {
               ...config,
-              formatStyle: config.tuiSidebarPanel.formatStyle
-                ? resolveQuotaFormatStyle(config.tuiSidebarPanel.formatStyle)
-                : formatStyle,
+              formatStyle: effectiveFormatStyle,
             },
           }).join("\n")
         : undefined
@@ -159,7 +160,7 @@ async function getQuotaMessage(
             layout: config.layout,
             entries: data?.entries ?? [],
             errors: data?.errors ?? [],
-            style: resolveQuotaFormatStyle(config.formatStyle),
+            style: rootFormatStyle,
             percentDisplayMode: config.percentDisplayMode,
             resetTimeDecimals: config.resetTimeDecimals,
             sessionTokens: data?.sessionTokens,
@@ -213,7 +214,7 @@ async function runQuotaCommand(
       command,
       arguments: argumentsText,
       client: context.client as never,
-      nativeConnections: getNativeConnectionAccess(context),
+      nativeConnections: getNativeConnectionAccess(),
       roots: { fallbackDirectory: process.cwd() },
       sessionID,
       resolveSessionMeta: (id) => getSessionModelMeta(context.client, id),
@@ -231,11 +232,8 @@ async function runQuotaCommand(
   }
 }
 
-function getNativeConnectionAccess(context: TuiContext) {
-  if (isNativeConnectionResolverContext(context)) {
-    return createNativeConnectionAccessFromPluginContext(context.client, context);
-  }
-  return createRegisteredNativeConnectionAccess(context.client);
+function getNativeConnectionAccess(): NativeConnectionAccess {
+  return createNativeConnectionAccess();
 }
 
 function registerQuotaCommands(context: TuiContext, getSessionID: () => string | undefined): void {

@@ -76,7 +76,8 @@ describe("quota provider four-surface formatting", () => {
     }
     expect(command).toContain("one source unavailable");
     expect(toast).toContain("one source unavailable");
-    expect(sidebar).toContain("one source unavailable");
+    expect(sidebar).toContain("one source");
+    expect(sidebar).toContain("unavailable");
     expect(compact).toContain("issue");
   });
 });

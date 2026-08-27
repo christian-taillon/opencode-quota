@@ -997,7 +997,10 @@ const tui: TuiPlugin = async (api) => {
     disposeQuotaTelemetryOwner(createTuiQuotaClient(api));
   });
 
-  void initializeTuiRegistration(api, registrationGate).catch(() => {});
+  void initializeTuiRegistration(api, registrationGate).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[opencode-quota] TUI initialization failed: ${message}`);
+  });
 };
 
 const pluginModule: TuiPluginModule & { id: string } = {

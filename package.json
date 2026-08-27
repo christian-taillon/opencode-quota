@@ -19,8 +19,8 @@
       "default": "./dist/index.js"
     },
     "./tui": {
-      "types": "./dist/tui.d.ts",
-      "default": "./dist/tui.js"
+      "types": "./dist/tui-v2.d.ts",
+      "default": "./dist/tui-v2.js"
     }
   },
   "oc-plugin": [

@@ -1,15 +1,18 @@
-import { define, type PluginContext } from "@opencode-ai/plugin/v2/promise";
-
-import { registerNativeConnectionResolver } from "./lib/opencode-v2-connections.js";
+import { define } from "@opencode-ai/plugin/v2/promise";
 
 /**
- * V2 server-side companion. The resolver remains in-process; no credential
- * values are returned through a client, command, log, or serialized state.
+ * OpenCode V2 server plugin entrypoint.
+ *
+ * The TUI is exposed separately through the package's `./tui` export.
+ *
+ * The server plugin is intentionally a no-op: native credential access is
+ * handled entirely by the TUI reading OpenCode's SQLite credential database
+ * directly. There is no server→TUI bridge or shared module state.
  */
 export const QuotaV2Plugin = define({
   id: "@slkiser/opencode-quota",
-  setup(context: PluginContext) {
-    registerNativeConnectionResolver(context);
+  setup() {
+    // No server-side operations needed.
   },
 });
 
