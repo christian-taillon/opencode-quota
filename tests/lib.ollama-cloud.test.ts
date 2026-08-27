@@ -48,13 +48,21 @@ function mockResponse(params: {
 
 const usagePayload = {
   limits: {
-    session: { usage: 0.25 },
-    weekly: { usage: 0.405 },
+    session: {
+      usage: 0.25,
+      models: [
+        { name: "qwen3-coder:480b", request_count: 3 },
+        { name: "deepseek-v3.1:671b", request_count: 1 },
+      ],
+    },
+    weekly: {
+      usage: 0.405,
+      models: [
+        { name: "qwen3-coder:480b", request_count: 12 },
+        { name: "deepseek-v3.1:671b", request_count: 1 },
+      ],
+    },
   },
-  models: [
-    { model: "qwen3-coder:480b", requests: 12 },
-    { model: "deepseek-v3.1:671b", requests: 1 },
-  ],
 };
 
 describe("queryOllamaCloudQuota", () => {
@@ -108,10 +116,11 @@ describe("queryOllamaCloudQuota", () => {
     );
   });
 
-  it("maps usage fractions and sorts model request counts", async () => {
+  it("maps usage fractions from a real nested Ollama response", async () => {
     mockResponse({ ok: true, status: 200, json: usagePayload });
 
-    await expect(queryOllamaCloudQuota()).resolves.toEqual({
+    const out = await queryOllamaCloudQuota();
+    expect(out).toEqual({
       success: true,
       session: {
         usageFraction: 0.25,
@@ -123,6 +132,27 @@ describe("queryOllamaCloudQuota", () => {
         usagePercent: 40.5,
         percentRemaining: 59.5,
       },
+      models: [],
+    });
+    expect(out && out.success ? out.rowErrors : undefined).toBeUndefined();
+  });
+
+  it("parses legacy top-level models for backwards compatibility", () => {
+    const out = _parseOllamaCloudUsage({
+      limits: {
+        session: { usage: 0.25 },
+        weekly: { usage: 0.405 },
+      },
+      models: [
+        { model: "qwen3-coder:480b", requests: 12 },
+        { model: "deepseek-v3.1:671b", requests: 1 },
+      ],
+    });
+
+    expect(out).toEqual({
+      success: true,
+      session: { usageFraction: 0.25, usagePercent: 25, percentRemaining: 75 },
+      weekly: { usageFraction: 0.405, usagePercent: 40.5, percentRemaining: 59.5 },
       models: [
         { model: "deepseek-v3.1:671b", requests: 1 },
         { model: "qwen3-coder:480b", requests: 12 },
@@ -133,8 +163,10 @@ describe("queryOllamaCloudQuota", () => {
   it("preserves zero and fully-used fraction boundaries", () => {
     expect(
       _parseOllamaCloudUsage({
-        limits: { session: { usage: 0 }, weekly: { usage: 1 } },
-        models: [],
+        limits: {
+          session: { usage: 0 },
+          weekly: { usage: 1, models: [] },
+        },
       }),
     ).toEqual({
       success: true,
@@ -187,7 +219,10 @@ describe("queryOllamaCloudQuota", () => {
   it("rejects more than 100 model rows", () => {
     expect(
       _parseOllamaCloudUsage({
-        limits: { session: { usage: 0.1 } },
+        limits: {
+          session: { usage: 0.1 },
+          weekly: { usage: 0.2 },
+        },
         models: Array.from({ length: 101 }, (_, index) => ({
           model: `model-${index}`,
           requests: index,

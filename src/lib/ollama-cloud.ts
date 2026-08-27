@@ -82,6 +82,8 @@ function parseWindow(value: unknown): OllamaCloudWindow | undefined {
 }
 
 function parseModels(value: unknown, rowErrors: string[]): OllamaCloudModelUsage[] {
+  if (value === undefined) return [];
+
   if (!Array.isArray(value)) {
     rowErrors.push("Models: expected an array");
     return [];
@@ -130,7 +132,9 @@ function parseOllamaCloudUsage(payload: unknown): OllamaCloudResult {
     };
   }
 
-  if (Array.isArray(payload.models) && payload.models.length > MAX_MODEL_ROWS) {
+  const topLevelModels = payload.models;
+
+  if (Array.isArray(topLevelModels) && topLevelModels.length > MAX_MODEL_ROWS) {
     return {
       success: false,
       error: `Ollama Cloud usage API returned more than ${MAX_MODEL_ROWS} model rows`,
@@ -152,7 +156,7 @@ function parseOllamaCloudUsage(payload: unknown): OllamaCloudResult {
     rowErrors.push("Limits: expected an object");
   }
 
-  const models = parseModels(payload.models, rowErrors);
+  const models = parseModels(topLevelModels, rowErrors);
   if (!session && !weekly && models.length === 0) {
     return {
       success: false,
