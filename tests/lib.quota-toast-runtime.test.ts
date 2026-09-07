@@ -1,7 +1,7 @@
 import { rm } from "fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DEFAULT_CONFIG } from "../src/lib/types.js";
+import { DEFAULT_CONFIG } from "../src/lib/types.js";
 import {
   createAlibabaAuthModuleMock,
   createPluginTestClient as createClient,
