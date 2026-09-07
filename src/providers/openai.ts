@@ -71,6 +71,7 @@ function buildOpenAIEntries(
 }
 
 function accountLabel(account: OpenAIMultiAuthAccount): string {
+  if (account.planType === "team" || account.planType === "business") return "Business";
   return account.planType
     ? `${account.planType.slice(0, 1).toUpperCase()}${account.planType.slice(1)}`
     : `Account ${account.index + 1}`;

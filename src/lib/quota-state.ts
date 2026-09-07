@@ -48,7 +48,6 @@ export function buildQuotaProviderStateCacheKey(
     resolvedAuthIdentity?: ResolvedAuthIdentity;
   } = {},
 ): string {
-  const providerSchemaIdentity = providerId === "openai" ? "|labelSchema=plan-v1" : "";
   const googleModels = ctx.config.googleModels.join(",");
   const cursorPlan = ctx.config.cursorPlan;
   const cursorIncludedApiUsd = ctx.config.cursorIncludedApiUsd ?? "";
@@ -78,7 +77,7 @@ export function buildQuotaProviderStateCacheKey(
       ])}`
     : "";
 
-  return `${providerId}${providerSchemaIdentity}${quotaProvidersIdentity}${runtimeEligibleIdentity}|anthropicBinaryPath=${anthropicBinaryPath}|googleModels=${googleModels}|cursorPlan=${cursorPlan}|cursorIncludedApiUsd=${cursorIncludedApiUsd}|cursorBillingCycleStartDay=${cursorBillingCycleStartDay}|opencodeGoWindows=${opencodeGoWindows}|onlyCurrentModel=${onlyCurrentModel}|currentModel=${currentModel}|currentProviderID=${currentProviderID}${resolvedAuthIdentity}`;
+  return `${providerId}${quotaProvidersIdentity}${runtimeEligibleIdentity}|anthropicBinaryPath=${anthropicBinaryPath}|googleModels=${googleModels}|cursorPlan=${cursorPlan}|cursorIncludedApiUsd=${cursorIncludedApiUsd}|cursorBillingCycleStartDay=${cursorBillingCycleStartDay}|opencodeGoWindows=${opencodeGoWindows}|onlyCurrentModel=${onlyCurrentModel}|currentModel=${currentModel}|currentProviderID=${currentProviderID}${resolvedAuthIdentity}`;
 }
 
 function getQuotaProviderCacheDir(): string {

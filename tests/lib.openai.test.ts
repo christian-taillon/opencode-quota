@@ -244,7 +244,7 @@ describe("openai auth resolution", () => {
     );
 
     const out = await queryOpenAIQuotaForCredential({ accessToken: "token-secret" });
-    expect(out).toMatchObject({ success: true, label: "OpenAI (christiant.io)" });
+    expect(out).toMatchObject({ success: true, label: "OpenAI" });
   });
 
   it("does not echo upstream response identity material in errors", async () => {
@@ -501,8 +501,8 @@ describe("openai auth resolution", () => {
   it.each([
     ["business", "OpenAI (Business)"],
     [" TEAM ", "OpenAI (Business)"],
-    ["business_trial", "OpenAI (business_trial)"],
-    ["team_workspace", "OpenAI (team_workspace)"],
+    ["business_trial", "OpenAI"],
+    ["team_workspace", "OpenAI"],
     ["plus", "OpenAI (Plus)"],
     ["pro", "OpenAI (Pro)"],
   ])("derives the plan label for %j", async (planType, expectedLabel) => {

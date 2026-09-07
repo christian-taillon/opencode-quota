@@ -157,7 +157,6 @@ function derivePlanLabel(planType: string | undefined): string {
   if (normalized === "team" || normalized === "business") return "OpenAI (Business)";
   if (normalized.includes("pro")) return "OpenAI (Pro)";
   if (normalized.includes("plus")) return "OpenAI (Plus)";
-  if (displayPlanType) return `OpenAI (${displayPlanType})`;
   return "OpenAI";
 }
 
