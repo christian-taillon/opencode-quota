@@ -163,6 +163,9 @@ describe("openai provider", () => {
     expectAttemptedWithNoErrors(out);
     expect(openai.queryOpenAIQuota).toHaveBeenCalledWith({ requestTimeoutMs: 12000 });
     expect(openai.queryOpenAIQuotaForCredential).toHaveBeenCalledTimes(2);
+    for (const call of vi.mocked(openai.queryOpenAIQuotaForCredential).mock.calls) {
+      expect(call[1]).toEqual({ requestTimeoutMs: 12000 });
+    }
     expect(out.entries.map((entry) => entry.group)).toEqual(["OpenAI (Plus)", "OpenAI (Plus) #2"]);
     expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual([
       "openai-multi-auth:business",
@@ -223,7 +226,7 @@ describe("openai provider", () => {
       windows: { weekly: { percentRemaining: 50 } },
     });
     (multiAuth.readOpenAIMultiAuthAccounts as any).mockResolvedValueOnce([
-      { index: 0, accountId: "stale", accountLabel: "Business", sourceId: "stale" },
+      { index: 0, accountId: "stale", planType: "Business", sourceId: "stale" },
       {
         index: 1,
         accountId: "personal",
@@ -248,6 +251,11 @@ describe("openai provider", () => {
 
     expect(out.attempted).toBe(true);
     expect(out.entries).toHaveLength(2);
+    expect(out.entries.map((entry) => entry.group)).toEqual(["OpenAI (Plus)", "OpenAI (Plus) #2"]);
+    expect(JSON.stringify(out)).not.toMatch(
+      /native@example|native-account|native-cached|account_email|account_id/,
+    );
+    expect(out.statusDetails?.filter((detail) => detail.key === "auth_source")).toHaveLength(1);
     expect(out.errors).toEqual([
       {
         label: "OpenAI (Business)",
@@ -286,6 +294,152 @@ describe("openai provider", () => {
     expect(out.errors).toEqual([]);
     expect(out.entries).toHaveLength(1);
     expect(openai.queryOpenAIQuotaForCredential).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ accessToken: "shared" }, { accessToken: "shared" }, true],
+    [{ accountUserId: "member" }, { accountUserId: "member" }, true],
+    [
+      { accountId: "workspace", accountUserId: "member" },
+      { accountId: "workspace", accountUserId: "member" },
+      true,
+    ],
+    [
+      { accountId: "workspace", accountUserId: "member" },
+      { accountId: "other", accountUserId: "member" },
+      false,
+    ],
+    [{ accountId: "workspace", accountUserId: "member" }, { accountId: "workspace" }, false],
+    [{ accountId: "workspace" }, { accountId: "workspace", accountUserId: "member" }, false],
+    [
+      { accountId: "workspace", accountUserId: "one" },
+      { accountId: "workspace", accountUserId: "two" },
+      false,
+    ],
+    [{ email: "same@example.invalid" }, { email: "same@example.invalid" }, false],
+  ])("deduplicates only proven identity: %j / %j", async (native, account, duplicate) => {
+    const multiAuth = await import("../src/lib/openai-multi-auth.js");
+    const openai = await import("../src/lib/openai.js");
+    vi.mocked(openai.resolveOpenAIOAuth).mockReturnValue({
+      state: "configured",
+      sourceKey: "openai",
+      accessToken: "native",
+      email: "same@example.invalid",
+      ...native,
+    });
+    vi.mocked(multiAuth.readOpenAIMultiAuthAccounts).mockResolvedValueOnce([
+      {
+        index: 0,
+        sourceId: "source",
+        accessToken: "multi",
+        email: "same@example.invalid",
+        ...account,
+      },
+    ]);
+    vi.mocked(openai.queryOpenAIQuota).mockResolvedValueOnce({
+      success: true,
+      label: "OpenAI (Plus)",
+      windows: { weekly: { percentRemaining: 50 } },
+    });
+    vi.mocked(openai.queryOpenAIQuotaForCredential).mockResolvedValue({
+      success: true,
+      label: "OpenAI (Plus)",
+      windows: { weekly: { percentRemaining: 60 } },
+    });
+    const out = await openaiProvider.fetch({} as any);
+    expect(out.entries).toHaveLength(duplicate ? 1 : 2);
+    expect(openai.queryOpenAIQuotaForCredential).toHaveBeenCalledTimes(duplicate ? 0 : 1);
+  });
+
+  it("allocates one group per multi-window source in native-first storage order", async () => {
+    const multiAuth = await import("../src/lib/openai-multi-auth.js");
+    const openai = await import("../src/lib/openai.js");
+    const success = {
+      success: true as const,
+      label: "OpenAI (Plus)",
+      windows: {
+        hourly: { percentRemaining: 20 },
+        weekly: { percentRemaining: 60 },
+      },
+    };
+    vi.mocked(openai.queryOpenAIQuota).mockResolvedValueOnce(success);
+    vi.mocked(multiAuth.readOpenAIMultiAuthAccounts).mockResolvedValueOnce([
+      { index: 0, accessToken: "first", sourceId: "first" },
+      { index: 1, accessToken: "second", sourceId: "second" },
+    ]);
+    let finishFirst!: () => void;
+    vi.mocked(openai.queryOpenAIQuotaForCredential).mockImplementation(async (credential) => {
+      if (credential.accessToken === "first")
+        await new Promise<void>((resolve) => {
+          finishFirst = resolve;
+        });
+      else finishFirst();
+      return success;
+    });
+    const out = await openaiProvider.fetch({} as any);
+    expect(out.entries.map((entry) => entry.group)).toEqual([
+      "OpenAI (Plus)",
+      "OpenAI (Plus)",
+      "OpenAI (Plus) #2",
+      "OpenAI (Plus) #2",
+      "OpenAI (Plus) #3",
+      "OpenAI (Plus) #3",
+    ]);
+    expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual([
+      undefined,
+      undefined,
+      "first",
+      "first",
+      "second",
+      "second",
+    ]);
+  });
+
+  it("uses safe plan fallbacks and preserves healthy results after API failure", async () => {
+    const multiAuth = await import("../src/lib/openai-multi-auth.js");
+    const openai = await import("../src/lib/openai.js");
+    vi.mocked(openai.queryOpenAIQuota).mockResolvedValueOnce({
+      success: true,
+      label: "OpenAI (native@example.invalid)",
+      windows: { weekly: { percentRemaining: 50 } },
+    });
+    vi.mocked(multiAuth.readOpenAIMultiAuthAccounts).mockResolvedValueOnce([
+      {
+        index: 0,
+        accessToken: "first",
+        sourceId: "first",
+        planType: "Business",
+        accountLabel: "private@example.invalid",
+      },
+      {
+        index: 1,
+        accessToken: "second",
+        sourceId: "second",
+        accountLabel: "private@example.invalid",
+      },
+      { index: 2, accessToken: "third", sourceId: "third", planType: "Plus" },
+    ]);
+    vi.mocked(openai.queryOpenAIQuotaForCredential)
+      .mockResolvedValueOnce({
+        success: true,
+        label: "OpenAI",
+        windows: { weekly: { percentRemaining: 60 } },
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        label: "OpenAI (private@example.invalid)",
+        windows: { weekly: { percentRemaining: 70 } },
+      })
+      .mockResolvedValueOnce({ success: false, error: "OpenAI API error 401" });
+    const out = await openaiProvider.fetch({} as any);
+    expect(out.entries.map((entry) => entry.group)).toEqual([
+      "OpenAI (Account 1)",
+      "OpenAI (Business)",
+      "OpenAI (Account 2)",
+    ]);
+    expect(out.errors).toEqual([{ label: "OpenAI (Plus)", message: "OpenAI API error 401" }]);
+    expect(JSON.stringify(out)).not.toContain("private@example.invalid");
+    expect(JSON.stringify(out)).not.toContain("native@example.invalid");
   });
 
   it("is available when provider ids include openai/chatgpt/codex", async () => {

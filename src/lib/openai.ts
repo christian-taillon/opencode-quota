@@ -5,7 +5,6 @@
  * https://chatgpt.com/backend-api/wham/usage
  */
 
-import { sanitizeDisplayText } from "./display-sanitize.js";
 import { clampPercent } from "./format-utils.js";
 import { fetchWithTimeout } from "./http.js";
 import { readAuthFileCached } from "./opencode-auth.js";
@@ -165,10 +164,6 @@ function derivePlanLabel(planType: string | undefined): string {
 const OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 export const DEFAULT_OPENAI_AUTH_CACHE_MAX_AGE_MS = 5_000;
 export const OPENAI_AUTH_SOURCE_KEYS = ["openai", "codex", "chatgpt", "opencode"] as const;
-
-function sanitizeCredentialError(error: string, accessToken: string): string {
-  return sanitizeDisplayText(error).replaceAll(accessToken, "[redacted]");
-}
 
 export type OpenAIAuthSourceKey = (typeof OPENAI_AUTH_SOURCE_KEYS)[number];
 
@@ -368,12 +363,14 @@ export async function queryOpenAIQuotaForCredential(
       },
     });
   } catch (err) {
+    const message = err instanceof Error ? err.message : "";
     return {
       success: false,
-      error: sanitizeCredentialError(
-        err instanceof Error ? err.message : String(err),
-        credential.accessToken,
-      ),
+      // Parser and transport errors can contain response fragments or request credentials.
+      error:
+        /^Request timeout after \d+s$/u.test(message) || message === "fetch failed"
+          ? message
+          : "OpenAI quota request failed",
     };
   }
 }

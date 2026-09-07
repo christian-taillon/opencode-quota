@@ -132,11 +132,10 @@ describe("openai auth resolution", () => {
     expect(out && !out.success ? out.error : "").toContain("Token expired");
   });
 
-  it("does not echo a cached access token in API errors", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("token-secret was rejected", { status: 401 })) as any,
-    );
+  it("does not read or echo response identity material in credential-specific API errors", async () => {
+    const text = vi.fn(async () => "token-secret account-id email@example.invalid refresh-secret");
+    const json = vi.fn(async () => ({ error: "response identity" }));
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 401, text, json })) as any);
 
     const out = await queryOpenAIQuotaForCredential({ accessToken: "token-secret" });
     expect(out).toEqual({
@@ -144,6 +143,82 @@ describe("openai auth resolution", () => {
       error: "OpenAI API error 401",
     });
     expect(JSON.stringify(out)).not.toContain("token-secret");
+    expect(text).not.toHaveBeenCalled();
+    expect(json).not.toHaveBeenCalled();
+    expect(mocks.readAuthFileCached).not.toHaveBeenCalled();
+  });
+
+  it("only queries the cached credential and never refreshes an expired token", async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify(businessIndividualLimitUsage)));
+    vi.stubGlobal("fetch", fetch);
+    for (const expiresAt of [0, Date.now() - 1]) {
+      await expect(
+        queryOpenAIQuotaForCredential({ accessToken: "cached", expiresAt }),
+      ).resolves.toEqual({ success: false, error: "Token expired" });
+    }
+    expect(fetch).not.toHaveBeenCalled();
+    await expect(
+      queryOpenAIQuotaForCredential({ accessToken: "cached", accountId: "workspace" }),
+    ).resolves.toMatchObject({ success: true });
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(
+      "https://chatgpt.com/backend-api/wham/usage",
+      expect.objectContaining({
+        headers: {
+          Authorization: "Bearer cached",
+          "ChatGPT-Account-Id": "workspace",
+          "User-Agent": "OpenCode-Quota-Toast/1.0",
+        },
+      }),
+    );
+    expect(mocks.readAuthFileCached).not.toHaveBeenCalled();
+  });
+
+  it.each(["transport", "parser"])("does not expose identity in %s exceptions", async (failure) => {
+    const error = new Error(
+      "cached-token workspace-id member-id alice@example.invalid refresh-secret",
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        if (failure === "transport") throw error;
+        return {
+          ok: true,
+          json: async () => {
+            throw error;
+          },
+        };
+      }),
+    );
+    await expect(
+      queryOpenAIQuotaForCredential({ accessToken: "cached-token", accountId: "workspace-id" }),
+    ).resolves.toEqual({ success: false, error: "OpenAI quota request failed" });
+  });
+
+  it("applies the credential timeout while consuming the response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, json: () => new Promise(() => {}) })),
+    );
+    const result = queryOpenAIQuotaForCredential(
+      { accessToken: "cached" },
+      { requestTimeoutMs: 12000 },
+    );
+    await vi.advanceTimersByTimeAsync(12000);
+    await expect(result).resolves.toEqual({ success: false, error: "Request timeout after 12s" });
+  });
+
+  it("extracts native member identity for conservative deduplication", () => {
+    const payload = Buffer.from(
+      JSON.stringify({
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "workspace",
+          chatgpt_account_user_id: "member",
+        },
+      }),
+    ).toString("base64url");
+    expect(
+      resolveOpenAIOAuth({ openai: { type: "oauth", access: `header.${payload}.signature` } }),
+    ).toMatchObject({ accountId: "workspace", accountUserId: "member" });
   });
 
   it("removes role annotations from organization plan labels", async () => {
@@ -172,7 +247,7 @@ describe("openai auth resolution", () => {
     expect(out).toMatchObject({ success: true, label: "OpenAI (christiant.io)" });
   });
 
-  it("does not echo upstream response identity material in native errors", async () => {
+  it("does not echo upstream response identity material in errors", async () => {
     mocks.readAuthFileCached.mockResolvedValueOnce({
       openai: { type: "oauth", access: "access-secret", expires: Date.now() + 60_000 },
     });

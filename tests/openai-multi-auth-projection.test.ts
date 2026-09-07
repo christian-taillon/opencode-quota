@@ -49,6 +49,19 @@ function multiAccountResult(): QuotaProviderResult {
         percentRemaining: 68,
         resetTimeIso: "2026-08-22T12:00:00.000Z",
       },
+      {
+        accounting: {
+          resultType: "rate_limit",
+          acquisitionMethod: "remote_api",
+          ownership: "maintained",
+          authority: "provider_reported",
+          sourceId: "openai-multi-auth:personal",
+        },
+        name: "OpenAI (Personal) 5h",
+        group: "OpenAI (Personal)",
+        label: "5h:",
+        percentRemaining: 90,
+      },
     ],
   };
 }
@@ -67,6 +80,7 @@ describe("OpenAI multi-account projection", () => {
       "OpenAI (Business) Weekly",
       "OpenAI (Business) Code Review",
       "OpenAI (Personal) Weekly",
+      "OpenAI (Personal) 5h",
     ]);
   });
 });

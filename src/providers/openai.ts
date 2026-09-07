@@ -6,7 +6,6 @@
  * as separate OpenAI groups without refreshing or writing credentials.
  */
 
-import { sanitizeDisplayText } from "../lib/display-sanitize.js";
 import type {
   AccountingMetadata,
   QuotaProvider,
@@ -71,21 +70,18 @@ function buildOpenAIEntries(
   });
 }
 
-function displayAccountLabel(label: string | undefined): string | undefined {
-  const cleaned = label
-    ?.replace(/\s+\(role:[^)]+\)/giu, "")
-    .replace(/\s+\[id:[^\]]+\]/giu, "")
-    .trim();
-  return cleaned || undefined;
+function accountLabel(account: OpenAIMultiAuthAccount): string {
+  return account.planType
+    ? `${account.planType.slice(0, 1).toUpperCase()}${account.planType.slice(1)}`
+    : `Account ${account.index + 1}`;
 }
 
-function accountLabel(account: OpenAIMultiAuthAccount): string {
-  return displayAccountLabel(account.accountLabel) || `Account ${account.index + 1}`;
+function providerPlanLabel(providerLabel: string): string | undefined {
+  return providerLabel.match(/^OpenAI\s*\((Business|Pro|Plus|Free|Enterprise|Go|Edu)\)$/)?.[1];
 }
 
 function multiAuthGroup(account: OpenAIMultiAuthAccount, providerLabel: string): string {
-  const planLabel = providerLabel.match(/^OpenAI\s*\((.*)\)$/)?.[1]?.trim();
-  return `OpenAI (${planLabel || accountLabel(account)})`;
+  return `OpenAI (${providerPlanLabel(providerLabel) || accountLabel(account)})`;
 }
 
 function sameNativeAccount(
@@ -102,12 +98,7 @@ function sameNativeAccount(
   }
 
   if (native.accountId && account.accountId && native.accountId === account.accountId) {
-    if (native.accountUserId || account.accountUserId) {
-      return Boolean(
-        native.email && account.email && native.email.toLowerCase() === account.email.toLowerCase(),
-      );
-    }
-    return true;
+    return !native.accountUserId && !account.accountUserId;
   }
 
   return false;
@@ -126,86 +117,47 @@ function uniqueGroupName(group: string, used: Set<string>): string {
   return unique;
 }
 
-function ensureDistinctGroups(entries: QuotaToastEntry[]): QuotaToastEntry[] {
-  const used = new Set<string>();
-  return entries.map((entry) => {
-    if (!entry.group) return entry;
-    const group = uniqueGroupName(entry.group, used);
-    if (group === entry.group) return entry;
-    const suffix = entry.name.startsWith(entry.group) ? entry.name.slice(entry.group.length) : "";
-    return { ...entry, group, name: `${group}${suffix}` };
-  });
-}
-
-async function fetchMultiAuthQuota(
-  ctx: QuotaProviderContext,
-  accounts: OpenAIMultiAuthAccount[],
-  usedGroups: Set<string>,
-): Promise<QuotaProviderResult> {
-  const accountResults = await mapWithConcurrency(
-    accounts,
-    MULTI_AUTH_CONCURRENCY,
-    async (account) => {
-      if (!account.accessToken) {
-        return {
-          account,
-          result: {
-            success: false as const,
-            error: "Cached access token unavailable; refresh this account in oc-codex-multi-auth.",
-          },
-        };
-      }
-
-      const result = await queryOpenAIQuotaForCredential(
-        {
-          accessToken: account.accessToken,
-          accountId: account.accountId,
-          accountUserId: account.accountUserId,
-          expiresAt: account.expiresAt,
-          email: account.email,
+async function fetchMultiAuthQuota(ctx: QuotaProviderContext, accounts: OpenAIMultiAuthAccount[]) {
+  return mapWithConcurrency(accounts, MULTI_AUTH_CONCURRENCY, async (account) => {
+    if (!account.accessToken) {
+      return {
+        account,
+        result: {
+          success: false as const,
+          error: "Cached access token unavailable; refresh this account in oc-codex-multi-auth.",
         },
-        { requestTimeoutMs: ctx.config?.requestTimeoutMs },
-      );
-      return { account, result };
-    },
-  );
-
-  const entries: QuotaToastEntry[] = [];
-  const errors: QuotaToastError[] = [];
-
-  for (const { account, result } of accountResults) {
-    if (!result.success) {
-      errors.push({ label: `OpenAI (${accountLabel(account)})`, message: result.error });
-      continue;
+      };
     }
 
-    const group = uniqueGroupName(multiAuthGroup(account, result.label), usedGroups);
-    entries.push(...buildOpenAIEntries(result, group, account.sourceId));
-  }
-
-  const presence = await inspectOpenAIMultiAuthPresence();
-  return withStatusDetails(
-    attemptedResult(entries, errors),
-    statusDetailsFromRecord({
-      auth_source: "oc-codex-multi-auth",
-      multi_auth_state: presence.state,
-      multi_auth_accounts: String(presence.enabledAccountCount),
-      multi_auth_cached_access_tokens: String(presence.cachedAccessTokenCount),
-    }),
-  );
+    const result = await queryOpenAIQuotaForCredential(
+      {
+        accessToken: account.accessToken,
+        accountId: account.accountId,
+        accountUserId: account.accountUserId,
+        expiresAt: account.expiresAt,
+      },
+      { requestTimeoutMs: ctx.config?.requestTimeoutMs },
+    );
+    return { account, result };
+  });
 }
 
 async function fetchNativeOpenAIQuota(
   ctx: QuotaProviderContext,
   auth: ResolvedOpenAIOAuth,
+  multiAccount = false,
 ): Promise<QuotaProviderResult> {
   const result = await queryOpenAIQuota({ requestTimeoutMs: ctx.config?.requestTimeoutMs });
   const providerResult = mapNullableProviderResult(result, {
     errorLabel: "OpenAI",
-    onSuccess: (success) =>
-      attemptedResult(buildOpenAIEntries(success, success.label), [], {
-        singleWindowDisplayName: success.label,
-      }),
+    onSuccess: (success) => {
+      const group = multiAccount
+        ? `OpenAI (${providerPlanLabel(success.label) || "Account 1"})`
+        : success.label;
+      return attemptedResult(buildOpenAIEntries(success, group), [], {
+        singleWindowDisplayName: group,
+      });
+    },
   });
   const configured = auth.state === "configured";
   const expiresAt = configured ? auth.expiresAt : undefined;
@@ -221,8 +173,6 @@ async function fetchNativeOpenAIQuota(
           ? "expired"
           : "valid",
       token_expires_at: expiresAt ? new Date(expiresAt).toISOString() : "(none)",
-      account_email: configured && auth.email ? sanitizeDisplayText(auth.email) : "(none)",
-      account_id: configured && auth.accountId ? sanitizeDisplayText(auth.accountId) : "(none)",
     }),
   );
 }
@@ -251,24 +201,45 @@ export const openaiProvider: QuotaProvider = {
     const multiAuthAccounts = await readOpenAIMultiAuthAccounts();
     if (!multiAuthAccounts?.length) return fetchNativeOpenAIQuota(ctx, auth);
 
-    const nativePromise = fetchNativeOpenAIQuota(ctx, auth);
+    const nativePromise = fetchNativeOpenAIQuota(ctx, auth, true);
     const distinctAccounts =
       auth.state === "configured"
         ? multiAuthAccounts.filter((account) => !sameNativeAccount(auth, account))
         : multiAuthAccounts;
-    const usedGroups = new Set<string>();
-    const [native, multi] = await Promise.all([
+    const [native, accountResults] = await Promise.all([
       nativePromise,
-      fetchMultiAuthQuota(ctx, distinctAccounts, usedGroups),
+      fetchMultiAuthQuota(ctx, distinctAccounts),
     ]);
 
     if (distinctAccounts.length === 0) return native;
 
+    const usedGroups = new Set(
+      native.entries.flatMap((entry) => (entry.group ? [entry.group] : [])),
+    );
+    const entries: QuotaToastEntry[] = [...native.entries];
+    const errors: QuotaToastError[] = [...native.errors];
+    for (const { account, result } of accountResults) {
+      if (!result.success) {
+        errors.push({ label: `OpenAI (${accountLabel(account)})`, message: result.error });
+        continue;
+      }
+      const group = uniqueGroupName(multiAuthGroup(account, result.label), usedGroups);
+      entries.push(...buildOpenAIEntries(result, group, account.sourceId));
+    }
+    const presence = await inspectOpenAIMultiAuthPresence();
     return {
-      attempted: native.attempted || multi.attempted,
-      entries: ensureDistinctGroups([...native.entries, ...multi.entries]),
-      errors: [...native.errors, ...multi.errors],
-      statusDetails: [...(native.statusDetails ?? []), ...(multi.statusDetails ?? [])],
+      attempted: true,
+      entries,
+      errors,
+      statusDetails: [
+        ...(native.statusDetails ?? []),
+        ...statusDetailsFromRecord({
+          multi_auth_source: "oc-codex-multi-auth",
+          multi_auth_state: presence.state,
+          multi_auth_accounts: String(presence.enabledAccountCount),
+          multi_auth_cached_access_tokens: String(presence.cachedAccessTokenCount),
+        }),
+      ],
     };
   },
 };
