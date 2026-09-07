@@ -247,6 +247,15 @@ export function createQuotaToastRuntime(
       config.onlyCurrentModel && params.sessionID ? (params.sessionMeta?.modelID ?? "") : "";
     const currentProviderID =
       config.onlyCurrentModel && params.sessionID ? (params.sessionMeta?.providerID ?? "") : "";
+    const renderIdentity = JSON.stringify({
+      accountingDetail: config.accountingDetail,
+      resetTimeDecimals: config.resetTimeDecimals,
+      sessionTokenScope: config.sessionTokenScope,
+      opencodeGoWindows: config.opencodeGoWindows,
+      opencodeMonthlyLimit: config.opencodeMonthlyLimit,
+      quotaProviders: config.quotaProviders,
+    });
+    const rootIdentity = JSON.stringify(dependencies.roots());
 
     return [
       `sessionID=${params.sessionID}`,
@@ -263,6 +272,8 @@ export function createQuotaToastRuntime(
       `cursorPlan=${config.cursorPlan}`,
       `cursorIncludedApiUsd=${config.cursorIncludedApiUsd ?? ""}`,
       `cursorBillingCycleStartDay=${config.cursorBillingCycleStartDay ?? ""}`,
+      `renderIdentity=${renderIdentity}`,
+      `rootIdentity=${rootIdentity}`,
     ].join("|");
   }
 
@@ -827,10 +838,8 @@ export function formatQuotaToastDebugInfo(params: {
   ].join("\n");
 }
 
-function isProviderFetchFailureOnly(errors: Array<{ message: string }>): boolean {
-  return (
-    errors.length > 0 && errors.every((error) => error.message === "Failed to read quota data")
-  );
+function hasRetryableProviderError(errors: Array<{ retryable?: boolean }>): boolean {
+  return errors.some((error) => error.retryable === true);
 }
 
 export async function collectQuotaToastMessage(params: {
@@ -871,7 +880,7 @@ export async function collectQuotaToastMessage(params: {
   const errors = data?.errors ?? [];
   const hasProviderQuotaRows = Boolean(data?.entries.length);
   const hasQuotaRows = Boolean(hasProviderQuotaRows || data?.sessionTokens);
-  const providerFetchFailureOnly = attemptedAny && isProviderFetchFailureOnly(errors);
+  const hasRetryableFetchFailure = attemptedAny && hasRetryableProviderError(errors);
   const retryableAvailabilityFailure =
     active.length === 0 && availability.some((item) => !item.ok && item.error === true);
 
@@ -913,7 +922,7 @@ export async function collectQuotaToastMessage(params: {
       sessionTokens: data?.sessionTokens,
     });
 
-    const retryableMaskedProviderFailure = !hasProviderQuotaRows && providerFetchFailureOnly;
+    const retryableMaskedProviderFailure = !hasProviderQuotaRows && hasRetryableFetchFailure;
 
     if (!runtimeConfig.debug) {
       return {
@@ -945,7 +954,7 @@ export async function collectQuotaToastMessage(params: {
     hasExplicitProviderIssues
   ) {
     const errorLines = errors.map((error) => `${error.label}: ${error.message}`).join("\n");
-    const retryableFetchFailure = !hasExplicitProviderIssues && providerFetchFailureOnly;
+    const retryableFetchFailure = hasRetryableFetchFailure;
     const retryableFailure = retryableFetchFailure || retryableAvailabilityFailure;
     const retryReason: DeferredQuotaRefreshReason | undefined = retryableFetchFailure
       ? "provider_fetch_failed"
@@ -980,7 +989,7 @@ export async function collectQuotaToastMessage(params: {
   }
 
   const retryableNoData =
-    providerFetchFailureOnly ||
+    hasRetryableFetchFailure ||
     (selection?.isAutoMode === true && active.length > 0 && errors.length === 0);
   return {
     message: runtimeConfig.debug
@@ -998,7 +1007,7 @@ export async function collectQuotaToastMessage(params: {
       : null,
     cacheRenderedMessage: false,
     retryable: retryableNoData,
-    retryReason: providerFetchFailureOnly
+    retryReason: hasRetryableFetchFailure
       ? "provider_fetch_failed"
       : retryableNoData
         ? "no_reportable_data"

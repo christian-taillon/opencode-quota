@@ -228,7 +228,13 @@ export function formatQuotaRows(params: {
     if (atomicValue) {
       const suffix = [value, timeStr].filter(Boolean).join(separator);
       if (suffix.length > maxWidth) {
-        if (value.length <= maxWidth) lines.push(padLeft(value, maxWidth));
+        const visibleValue =
+          value.length <= maxWidth
+            ? padLeft(value, maxWidth)
+            : maxWidth <= 1
+              ? "…".slice(0, maxWidth)
+              : `…${value.slice(-(maxWidth - 1))}`;
+        lines.push(visibleValue);
         return;
       }
       const availableNameWidth = maxWidth - (suffix ? separator.length + suffix.length : 0);

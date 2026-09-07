@@ -779,7 +779,6 @@ export interface GoogleAgyQuotaBucket {
   resetTimeIso?: string;
   remainingAmount?: string;
   accountEmail?: string;
-  accountKey: string;
   accountIndex: number;
   sourceKey: GoogleAgyAuthSourceKey;
 }
@@ -803,6 +802,8 @@ export interface GoogleQuotaResult {
 export interface QuotaError {
   success: false;
   error: string;
+  /** Whether retrying later may succeed without changing credentials or configuration. */
+  retryable?: boolean;
 }
 
 /** Combined quota result */

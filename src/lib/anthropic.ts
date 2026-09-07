@@ -17,12 +17,18 @@ import { join } from "path";
 import { resolveAnthropicOAuthCached } from "./anthropic-auth.js";
 import { sanitizeDisplaySnippet, sanitizeDisplayText } from "./display-sanitize.js";
 import { fetchWithTimeout } from "./http.js";
+import {
+  composeResolvedAuthIdentities,
+  deriveResolvedAuthIdentity,
+  type ResolvedAuthIdentity,
+} from "./resolved-auth-identity.js";
 
 const DEFAULT_CLAUDE_BINARY = "claude";
 const CLAUDE_COMMAND_TIMEOUT_MS = 3_000;
 const ANTHROPIC_DIAGNOSTICS_TTL_MS = 5_000;
 const ANTHROPIC_OAUTH_BACKOFF_BASE_MS = 30_000;
 const ANTHROPIC_OAUTH_COOLDOWN_MAX_MS = 15 * 60_000;
+const ANTHROPIC_OAUTH_COOLDOWN_MAX_ENTRIES = 16;
 const ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const ANTHROPIC_BETA_HEADER = "oauth-2025-04-20";
 const CLAUDE_CODE_CREDENTIALS_SERVICE = "Claude Code-credentials";
@@ -164,6 +170,7 @@ type AnthropicFallbackQuota =
   | {
       state: "unavailable";
       detail?: string;
+      failureKind?: "authentication";
     };
 
 type ParsedAuthProbe = {
@@ -566,25 +573,9 @@ async function readClaudeCredentialsAccessTokenFromFile(): Promise<ClaudeCredent
   }
 }
 
-async function readAnthropicOAuthAccessToken(options: {
-  includeClaudeCredentials: boolean;
-}): Promise<AnthropicCredentialsAccess> {
+async function readClaudeOAuthAccessToken(): Promise<AnthropicCredentialsAccess> {
   const locationsChecked: string[] = [];
   const unavailableDetails: string[] = [];
-
-  const opencodeCredentials = await resolveAnthropicOAuthCached();
-  if (opencodeCredentials.state === "configured") {
-    return {
-      state: "configured",
-      accessToken: opencodeCredentials.accessToken,
-      source: "opencode-auth",
-    };
-  }
-
-  if (!options.includeClaudeCredentials) {
-    return { state: "unavailable" };
-  }
-
   const keychainCredentials = await readClaudeCredentialsAccessTokenFromMacOSKeychain();
   if (keychainCredentials?.state === "configured") {
     return { ...keychainCredentials, source: "claude-credentials" };
@@ -610,6 +601,23 @@ async function readAnthropicOAuthAccessToken(options: {
     state: "unavailable",
     detail: unavailableDetails[0] ?? getClaudeCredentialsNotFoundDetail(locationsChecked),
   };
+}
+
+async function readAnthropicOAuthAccessToken(options: {
+  includeClaudeCredentials: boolean;
+}): Promise<AnthropicCredentialsAccess> {
+  const opencodeCredentials = await resolveAnthropicOAuthCached();
+  if (opencodeCredentials.state === "configured") {
+    return {
+      state: "configured",
+      accessToken: opencodeCredentials.accessToken,
+      source: "opencode-auth",
+    };
+  }
+
+  return options.includeClaudeCredentials
+    ? await readClaudeOAuthAccessToken()
+    : { state: "unavailable" };
 }
 
 function fingerprintAccessToken(accessToken: string): string {
@@ -656,10 +664,15 @@ function getAnthropicOAuthCooldownMessage(remainingMs: number): string {
 }
 
 function retainAnthropicOAuthCooldownForToken(tokenFingerprint: string): void {
-  for (const fingerprint of anthropicOAuthCooldowns.keys()) {
-    if (fingerprint !== tokenFingerprint) {
-      anthropicOAuthCooldowns.delete(fingerprint);
-    }
+  const targetSize = anthropicOAuthCooldowns.has(tokenFingerprint)
+    ? ANTHROPIC_OAUTH_COOLDOWN_MAX_ENTRIES
+    : ANTHROPIC_OAUTH_COOLDOWN_MAX_ENTRIES - 1;
+  const oldestFirst = [...anthropicOAuthCooldowns.entries()].sort(
+    ([, left], [, right]) => left.blockedUntilMs - right.blockedUntilMs,
+  );
+  for (const [fingerprint] of oldestFirst) {
+    if (anthropicOAuthCooldowns.size <= targetSize) break;
+    if (fingerprint !== tokenFingerprint) anthropicOAuthCooldowns.delete(fingerprint);
   }
 }
 
@@ -729,11 +742,12 @@ async function performAnthropicOAuthUsageRequest(
         anthropicOAuthCooldowns.delete(tokenFingerprint);
 
         if (!response.ok) {
+          const authenticationFailure = response.status === 401 || response.status === 403;
           let detail = "";
           try {
             detail = sanitizeAnthropicApiDetail(await response.text(), accessToken);
           } catch (error) {
-            if (timeoutSignal.aborted) throw error;
+            if (timeoutSignal.aborted && !authenticationFailure) throw error;
             detail = "";
           }
 
@@ -742,6 +756,7 @@ async function performAnthropicOAuthUsageRequest(
             detail: detail
               ? `Anthropic API error ${response.status}: ${detail}`
               : `Anthropic API returned ${response.status}`,
+            ...(authenticationFailure ? { failureKind: "authentication" as const } : {}),
           };
         }
 
@@ -1202,7 +1217,7 @@ export async function getAnthropicDiagnostics(
       return mapLocalDiagnosticsToAnthropicDiagnostics(localDiagnostics);
     }
 
-    const credentials = await readAnthropicOAuthAccessToken({
+    let credentials = await readAnthropicOAuthAccessToken({
       includeClaudeCredentials: localDiagnostics.authStatus === "authenticated",
     });
     if (credentials.state !== "configured") {
@@ -1222,10 +1237,25 @@ export async function getAnthropicDiagnostics(
       return diagnostics;
     }
 
-    const fallbackQuota = await queryAnthropicQuotaFromOAuthAccessToken(
+    let fallbackQuota = await queryAnthropicQuotaFromOAuthAccessToken(
       credentials.accessToken,
       options.requestTimeoutMs,
     );
+    if (
+      fallbackQuota.state === "unavailable" &&
+      fallbackQuota.failureKind === "authentication" &&
+      credentials.source === "opencode-auth" &&
+      localDiagnostics.authStatus === "authenticated"
+    ) {
+      const claudeCredentials = await readClaudeOAuthAccessToken();
+      if (claudeCredentials.state === "configured") {
+        credentials = claudeCredentials;
+        fallbackQuota = await queryAnthropicQuotaFromOAuthAccessToken(
+          claudeCredentials.accessToken,
+          options.requestTimeoutMs,
+        );
+      }
+    }
     if (fallbackQuota.state !== "success") {
       const diagnostics: AnthropicDiagnostics = {
         installed: localDiagnostics.installed,
@@ -1301,6 +1331,52 @@ export async function hasAnthropicCredentialsConfigured(
   }
 }
 
+export async function resolveAnthropicAuthIdentity(
+  options: AnthropicProbeOptions = {},
+): Promise<ResolvedAuthIdentity | null> {
+  let localDiagnostics: AnthropicLocalDiagnostics;
+  try {
+    localDiagnostics = await getCachedAnthropicLocalDiagnostics(options);
+  } catch {
+    return null;
+  }
+
+  // Claude CLI quota does not expose an account identity. Keep that winning
+  // path process-local rather than risking reuse after a CLI account switch.
+  if (localDiagnostics.localQuota) return null;
+
+  const opencodeCredentials = await resolveAnthropicOAuthCached();
+  const opencodeIdentity =
+    opencodeCredentials.state === "configured"
+      ? await deriveResolvedAuthIdentity({
+          providerId: "anthropic:opencode-auth",
+          principal: { kind: "credential", value: opencodeCredentials.accessToken },
+        })
+      : null;
+
+  if (localDiagnostics.authStatus !== "authenticated") {
+    return opencodeIdentity;
+  }
+
+  const claudeCredentials = await readClaudeOAuthAccessToken();
+  const claudeIdentity =
+    claudeCredentials.state === "configured"
+      ? await deriveResolvedAuthIdentity({
+          providerId: "anthropic:claude-credentials",
+          principal: { kind: "credential", value: claudeCredentials.accessToken },
+        })
+      : null;
+
+  if (opencodeIdentity && claudeIdentity) {
+    return composeResolvedAuthIdentities({
+      providerId: "anthropic",
+      identities: [opencodeIdentity, claudeIdentity],
+    });
+  }
+
+  return opencodeIdentity ?? claudeIdentity;
+}
+
 export async function queryAnthropicQuota(
   options: AnthropicProbeOptions = {},
 ): Promise<AnthropicResult> {
@@ -1310,7 +1386,11 @@ export async function queryAnthropicQuota(
       return diagnostics.quota ?? null;
     }
 
-    if (diagnostics.authStatus === "authenticated" && diagnostics.message) {
+    if (
+      (diagnostics.authStatus === "authenticated" ||
+        diagnostics.oauthCredentialSource !== undefined) &&
+      diagnostics.message
+    ) {
       return {
         success: false,
         error: diagnostics.message,

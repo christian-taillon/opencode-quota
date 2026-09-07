@@ -4,10 +4,15 @@ import businessTeamMonthlyUsage from "./fixtures/openai/business-team-monthly.sa
 
 const mocks = vi.hoisted(() => ({
   readAuthFileCached: vi.fn(),
+  deriveResolvedAuthIdentity: vi.fn(async () => "rai1_test-opaque-identity"),
 }));
 
 vi.mock("../src/lib/opencode-auth.js", () => ({
   readAuthFileCached: mocks.readAuthFileCached,
+}));
+
+vi.mock("../src/lib/resolved-auth-identity.js", () => ({
+  deriveResolvedAuthIdentity: mocks.deriveResolvedAuthIdentity,
 }));
 
 import {
@@ -15,6 +20,7 @@ import {
   hasOpenAIOAuthCached,
   queryOpenAIQuota,
   queryOpenAIQuotaForCredential,
+  resolveOpenAIAuthIdentity,
   resolveOpenAIOAuth,
 } from "../src/lib/openai.js";
 
@@ -34,6 +40,59 @@ describe("openai auth resolution", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("prefers the resolved stable account id for opaque cache identity", async () => {
+    mocks.readAuthFileCached.mockResolvedValue({
+      openai: {
+        type: "oauth",
+        access: "access-secret",
+        refresh: "refresh-secret",
+        accountId: "account-stable-id",
+      },
+    });
+
+    await expect(resolveOpenAIAuthIdentity()).resolves.toBe("rai1_test-opaque-identity");
+    expect(mocks.deriveResolvedAuthIdentity).toHaveBeenCalledWith({
+      providerId: "openai",
+      principal: { kind: "stable-id", value: "account-stable-id" },
+    });
+    expect(JSON.stringify(await resolveOpenAIAuthIdentity())).not.toMatch(
+      /access-secret|refresh-secret|account-stable-id/u,
+    );
+  });
+
+  it("uses the winning credential rather than advisory email when no account id exists", async () => {
+    const emailPayload = Buffer.from(JSON.stringify({ email: "shared@example.com" })).toString(
+      "base64url",
+    );
+    mocks.readAuthFileCached
+      .mockResolvedValueOnce({
+        openai: {
+          type: "oauth",
+          access: `header.${emailPayload}.signature-one`,
+          refresh: "refresh-secret-one",
+        },
+      })
+      .mockResolvedValueOnce({
+        openai: {
+          type: "oauth",
+          access: `header.${emailPayload}.signature-two`,
+          refresh: "refresh-secret-two",
+        },
+      });
+
+    await resolveOpenAIAuthIdentity();
+    await resolveOpenAIAuthIdentity();
+
+    expect(mocks.deriveResolvedAuthIdentity).toHaveBeenNthCalledWith(1, {
+      providerId: "openai",
+      principal: { kind: "credential", value: "refresh-secret-one" },
+    });
+    expect(mocks.deriveResolvedAuthIdentity).toHaveBeenNthCalledWith(2, {
+      providerId: "openai",
+      principal: { kind: "credential", value: "refresh-secret-two" },
+    });
   });
 
   it("returns none when no supported native OpenCode auth entry exists", () => {
@@ -73,7 +132,7 @@ describe("openai auth resolution", () => {
     expect(out && !out.success ? out.error : "").toContain("Token expired");
   });
 
-  it("redacts a cached access token from API errors", async () => {
+  it("does not echo a cached access token in API errors", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response("token-secret was rejected", { status: 401 })) as any,
@@ -82,8 +141,9 @@ describe("openai auth resolution", () => {
     const out = await queryOpenAIQuotaForCredential({ accessToken: "token-secret" });
     expect(out).toEqual({
       success: false,
-      error: "OpenAI API error 401: [redacted] was rejected",
+      error: "OpenAI API error 401",
     });
+    expect(JSON.stringify(out)).not.toContain("token-secret");
   });
 
   it("removes role annotations from organization plan labels", async () => {
@@ -110,6 +170,28 @@ describe("openai auth resolution", () => {
 
     const out = await queryOpenAIQuotaForCredential({ accessToken: "token-secret" });
     expect(out).toMatchObject({ success: true, label: "OpenAI (christiant.io)" });
+  });
+
+  it("does not echo upstream response identity material in native errors", async () => {
+    mocks.readAuthFileCached.mockResolvedValueOnce({
+      openai: { type: "oauth", access: "access-secret", expires: Date.now() + 60_000 },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: "account alice@example.com account-id-123 access-secret",
+            }),
+            { status: 403 },
+          ),
+      ) as any,
+    );
+
+    const result = await queryOpenAIQuota();
+    expect(result).toEqual({ success: false, error: "OpenAI API error 403" });
+    expect(JSON.stringify(result)).not.toMatch(/alice@example\.com|account-id-123|access-secret/u);
   });
 
   it("reads auth from chatgpt when codex and openai are absent", async () => {

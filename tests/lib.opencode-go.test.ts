@@ -244,7 +244,7 @@ describe("queryOpenCodeGoQuota", () => {
 
     const result = await queryOpenCodeGoQuota(token);
 
-    expect(result).toMatchObject({ success: false });
+    expect(result).toMatchObject({ success: false, retryable: false });
     expect(JSON.stringify(result)).not.toContain(token);
     expect((result as { error: string }).error).toContain("OpenCode Go API error 401: [redacted]");
     expect((result as { error: string }).error.length).toBeLessThanOrEqual(
@@ -264,7 +264,7 @@ describe("queryOpenCodeGoQuota", () => {
 
     const result = await queryOpenCodeGoQuota(token);
 
-    expect(result).toMatchObject({ success: false });
+    expect(result).toMatchObject({ success: false, retryable: true });
     expect(JSON.stringify(result)).not.toContain(token);
     expect((result as { error: string }).error).toContain(
       "OpenCode Go API error 503: body [redacted]",
@@ -288,7 +288,7 @@ describe("queryOpenCodeGoQuota", () => {
 
     const result = await queryOpenCodeGoQuota(token);
 
-    expect(result).toMatchObject({ success: false });
+    expect(result).toMatchObject({ success: false, retryable: true });
     expect(JSON.stringify(result)).not.toContain(token);
     expect((result as { error: string }).error).toContain("[redacted]");
   });
